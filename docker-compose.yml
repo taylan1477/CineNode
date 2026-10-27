@@ -35,7 +35,8 @@ services:
       - TORRENTING_PORT=6881
     volumes:
       - ./config/qbittorrent:/config
-      - ./media/downloads:/data/downloads
+      - ./media/downloads:/downloads
+      - ./media:/media
     ports:
       - "8080:8080"
       - "6881:6881"
@@ -53,7 +54,10 @@ services:
       - TZ=Europe/Istanbul
     volumes:
       - ./config/radarr:/config
+      - ./media/downloads:/downloads
+      - ./media/movies:/media/movies
       - ./media:/data
+      - ./media:/media
     ports:
       - "7878:7878"
     restart: unless-stopped

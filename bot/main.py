@@ -118,7 +118,15 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = item.get("status", "İniyor")
         size_left = round(item.get("sizeleft", 0) / (1024 * 1024 * 1024), 2)
         total_size = round(item.get("size", 0) / (1024 * 1024 * 1024), 2)
-        msg += f"• *{title}*\n  Durum: {status} | Kalan: {size_left} GB / {total_size} GB\n\n"
+        
+        # İlerleme hesapla
+        if total_size > 0:
+            progress = round(((total_size - size_left) / total_size) * 100, 1)
+        else:
+            progress = 0
+
+        timeleft = item.get("timeleft", "Hesaplanıyor")
+        msg += f"• *{title}*\n  Durum: `{status}` (%{progress})\n  Kalan: {size_left} GB / {total_size} GB (Tahmini: {timeleft})\n\n"
 
     await update.message.reply_text(msg, parse_mode="Markdown")
 
