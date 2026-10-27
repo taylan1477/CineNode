@@ -1,0 +1,81 @@
+services:
+  plex:
+    image: lscr.io/linuxserver/plex:latest
+    container_name: cinenode_plex
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Istanbul
+      - VERSION=docker
+    volumes:
+      - ./config/plex:/config
+      - ./media/movies:/media/movies
+    ports:
+      - "32400:32400/tcp"
+      - "3005:3005/tcp"
+      - "8324:8324/tcp"
+      - "32469:32469/tcp"
+      - "1900:1900/udp"
+      - "32410:32410/udp"
+      - "32412:32412/udp"
+      - "32413:32413/udp"
+      - "32414:32414/udp"
+    restart: unless-stopped
+    networks:
+      - cinenode_network
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: cinenode_qbittorrent
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Istanbul
+      - WEBUI_PORT=8080
+      - TORRENTING_PORT=6881
+    volumes:
+      - ./config/qbittorrent:/config
+      - ./media/downloads:/data/downloads
+    ports:
+      - "8080:8080"
+      - "6881:6881"
+      - "6881:6881/udp"
+    restart: unless-stopped
+    networks:
+      - cinenode_network
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: cinenode_radarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Istanbul
+    volumes:
+      - ./config/radarr:/config
+      - ./media:/data
+    ports:
+      - "7878:7878"
+    restart: unless-stopped
+    networks:
+      - cinenode_network
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: cinenode_prowlarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Istanbul
+    volumes:
+      - ./config/prowlarr:/config
+    ports:
+      - "9996:9696"
+    restart: unless-stopped
+    networks:
+      - cinenode_network
+
+networks:
+  cinenode_network:
+    name: cinenode_network
+    driver: bridge

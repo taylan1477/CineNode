@@ -1,0 +1,17 @@
+# Environment variables
+.env
+
+# Media and Download files
+media/
+downloads/
+
+# Configuration and Database files for Containers
+config/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.log
