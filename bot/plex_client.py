@@ -1,9 +1,11 @@
 import os
 import logging
+from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional
 from plexapi.server import PlexServer
 from plexapi.myplex import MyPlexAccount
 
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 class PlexManager:

@@ -1,6 +1,9 @@
 import os
 import requests
+from dotenv import load_dotenv
 from typing import List, Dict, Any, Optional
+
+load_dotenv()
 
 class RadarrClient:
     def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None):

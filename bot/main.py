@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -157,8 +158,9 @@ def main():
     # Scheduler'ı başlat
     setup_scheduler(plex)
 
-    # Telegram bot uygulamasını başlat
-    app = ApplicationBuilder().token(token).build()
+    # Telegram bot uygulamasını başlat (Timeout toleransı yüksek istek havuzu ile)
+    request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
+    app = ApplicationBuilder().token(token).request(request).build()
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("yardim", help_command))
