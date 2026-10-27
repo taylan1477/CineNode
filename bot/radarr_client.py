@@ -13,18 +13,22 @@ class RadarrClient:
             "X-Api-Key": self.api_key,
             "Content-Type": "application/json"
         }
+        self.qbit_url = f"http://{os.getenv('QBIT_HOST', 'localhost')}:{os.getenv('QBIT_PORT', '8080')}"
 
     def search_movie(self, title: str) -> List[Dict[str, Any]]:
         """Radarr üzerinde film arar."""
         if not self.api_key:
             return []
         url = f"{self.base_url}/api/v3/movie/lookup"
-        response = requests.get(url, headers=self.headers, params={"term": title}, timeout=10)
-        if response.status_code == 200:
-            return response.json()
+        try:
+            response = requests.get(url, headers=self.headers, params={"term": title}, timeout=10)
+            if response.status_code == 200:
+                return response.json()
+        except Exception as e:
+            print(f"Radarr arama hatası: {e}")
         return []
 
-    def add_movie(self, movie_data: Dict[str, Any], root_folder: str = "/data/movies", quality_profile_id: int = 1) -> Dict[str, Any]:
+    def add_movie(self, movie_data: Dict[str, Any], root_folder: str = "/data/movies", quality_profile_id: int = 4) -> Dict[str, Any]:
         """Radarr kütüphanesine film ekler ve arama tetikler."""
         url = f"{self.base_url}/api/v3/movie"
         payload = {
@@ -40,18 +44,33 @@ class RadarrClient:
                 "searchForMovie": True
             }
         }
-        response = requests.post(url, headers=self.headers, json=payload, timeout=10)
-        if response.status_code in [200, 201]:
-            return {"success": True, "movie": response.json()}
-        return {"success": False, "error": response.text}
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=10)
+            if response.status_code in [200, 201]:
+                return {"success": True, "movie": response.json()}
+            return {"success": False, "error": response.text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
-    def get_queue(self) -> List[Dict[str, Any]]:
-        """Radarr'da aktif inen kuyruğu döner."""
-        if not self.api_key:
-            return []
-        url = f"{self.base_url}/api/v3/queue"
-        response = requests.get(url, headers=self.headers, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("records", [])
+    def get_live_torrents(self) -> List[Dict[str, Any]]:
+        """qBittorrent'ten anlık canlı indirme hızlarını ve ilerlemeleri döner."""
+        try:
+            res = requests.get(f"{self.qbit_url}/api/v2/torrents/info", timeout=5)
+            if res.status_code == 200:
+                torrents = res.json()
+                active = []
+                for t in torrents:
+                    if t.get("state") in ["downloading", "stalledDL", "queuedDL", "forcedDL"]:
+                        active.append({
+                            "name": t.get("name"),
+                            "progress": round(t.get("progress", 0) * 100, 1),
+                            "dlspeed": round(t.get("dlspeed", 0) / (1024 * 1024), 2),
+                            "eta": t.get("eta", 0),
+                            "size": round(t.get("size", 0) / (1024 * 1024 * 1024), 2),
+                            "amount_left": round(t.get("amount_left", 0) / (1024 * 1024 * 1024), 2),
+                            "seeds": t.get("num_seeds", 0)
+                        })
+                return active
+        except Exception as e:
+            print(f"qBittorrent canlı veri hatası: {e}")
         return []
