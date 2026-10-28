@@ -167,16 +167,20 @@ async def quality_callback_handler(update: Update, context: ContextTypes.DEFAULT
         
         if quality_id == 4:
             quality_name = "1080p Full HD"
+            target_folder = "/media/movies_1080p"
         elif quality_id == 7:
             quality_name = "Kompakt 2160p (4K Hafif)"
+            target_folder = "/media/movies_4k"
         elif quality_id == 5:
             quality_name = "Full 2160p (4K Master)"
+            target_folder = "/media/movies_4k"
         else:
             quality_name = "Otomatik Kalite"
+            target_folder = "/media/movies_1080p"
 
         await query.edit_message_text(f"⏳ *{title} ({year})* [{quality_name}] indirme sırasına ekleniyor...", parse_mode="Markdown")
 
-        res = radarr.add_movie(movie_data, quality_profile_id=quality_id)
+        res = radarr.add_movie(movie_data, root_folder=target_folder, quality_profile_id=quality_id)
         if res.get("success"):
             reply = (
                 f"✅ *{title} ({year})* [{quality_name}] başarıyla indirme sırasına eklendi!\n\n"
