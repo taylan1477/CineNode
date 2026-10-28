@@ -111,11 +111,14 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Kullanıcı için bekleyen isteği kaydet
     PENDING_REQUESTS[user_id] = best_match
 
-    # Kalite butonları
+    # Kalite butonları (1080p, Kompakt 2160p, Full 2160p)
     keyboard = [
         [
-            InlineKeyboardButton("🎬 1080p (Full HD)", callback_data=f"qual_4_{user_id}"),
-            InlineKeyboardButton("🌟 2160p (4K UHD)", callback_data=f"qual_5_{user_id}")
+            InlineKeyboardButton("🎬 1080p (Full HD)", callback_data=f"qual_4_{user_id}")
+        ],
+        [
+            InlineKeyboardButton("⚡ Kompakt 2160p (4K ~7GB)", callback_data=f"qual_7_{user_id}"),
+            InlineKeyboardButton("👑 Full 2160p (4K Master ~20GB)", callback_data=f"qual_5_{user_id}")
         ],
         [
             InlineKeyboardButton("❌ İptal", callback_data=f"qual_cancel_{user_id}")
@@ -126,7 +129,10 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         f"🎬 *{title} ({year})* bulundu!\n\n"
         f"📖 _{overview}_\n\n"
-        "📥 *Hangi kalitede indirmek istersiniz?*"
+        "📥 *Hangi kalitede indirmek istersiniz?*\n"
+        "• `1080p` : Standart Full HD (Hızlı ve hafif)\n"
+        "• `Kompakt 2160p` : 4K çözünürlük (~7 GB, disk ve upload dostu)\n"
+        "• `Full 2160p` : Gerçek Stüdyo 4K (~20 GB, kayıpsız Atmos/HDR)"
     )
     await search_msg.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
@@ -158,7 +164,15 @@ async def quality_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
         title = movie_data.get("title")
         year = movie_data.get("year")
-        quality_name = "1080p Full HD" if quality_id == 4 else "2160p (4K UHD)"
+        
+        if quality_id == 4:
+            quality_name = "1080p Full HD"
+        elif quality_id == 7:
+            quality_name = "Kompakt 2160p (4K Hafif)"
+        elif quality_id == 5:
+            quality_name = "Full 2160p (4K Master)"
+        else:
+            quality_name = "Otomatik Kalite"
 
         await query.edit_message_text(f"⏳ *{title} ({year})* [{quality_name}] indirme sırasına ekleniyor...", parse_mode="Markdown")
 
