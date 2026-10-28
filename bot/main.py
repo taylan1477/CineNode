@@ -353,7 +353,15 @@ def main():
     app.add_handler(CallbackQueryHandler(stop_track_callback, pattern=r"^stop_track_"))
 
     logger.info("CineBot hazır ve dinliyor...")
-    app.run_polling()
+    
+    # Ağ dalgalanmalarına karşı sınırsız yeniden deneme (Resilient loop)
+    import time
+    while True:
+        try:
+            app.run_polling(bootstrap_retries=-1, timeout=30)
+        except Exception as e:
+            logger.warning(f"Bağlantı kesintisi ({e}), 5 saniye içinde tekrar bağlanılıyor...")
+            time.sleep(5)
 
 if __name__ == "__main__":
     main()
