@@ -61,6 +61,24 @@ def format_eta(seconds: int) -> str:
         return f"{hrs} sa {mins} dk"
     return f"{mins} dk {secs} sn"
 
+def cleanup_completed_downloads():
+    """Kütüphaneye aktarılmış ve tamamlanmış torrentleri downloads klasöründen temizler (Duplicate önleme)."""
+    try:
+        qbit_url = f"http://{os.getenv('QBIT_HOST', 'localhost')}:{os.getenv('QBIT_PORT', '8080')}"
+        res = requests.get(f"{qbit_url}/api/v2/torrents/info", timeout=5)
+        if res.status_code == 200:
+            for t in res.json():
+                # İndirmesi %100 bitmiş ve seed aşamasına geçmiş olanlar
+                if t.get("progress") == 1 and t.get("state") in ["stalledUP", "uploading", "pausedUP"]:
+                    logger.info(f"Duplicate temizliği: {t['name']} downloads klasöründen temizleniyor.")
+                    requests.post(
+                        f"{qbit_url}/api/v2/torrents/delete",
+                        data={"hashes": t["hash"], "deleteFiles": "true"},
+                        timeout=5
+                    )
+    except Exception as e:
+        logger.error(f"Otomatik indirme temizliği hatası: {e}")
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg = (
