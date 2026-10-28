@@ -61,6 +61,38 @@ def format_eta(seconds: int) -> str:
         return f"{hrs} sa {mins} dk"
     return f"{mins} dk {secs} sn"
 
+def auto_import_completed_downloads():
+    """Downloads klasöründeki inmiş dosyaları otomatik tespit edip kütüphaneye aktarır ve Plex'i günceller."""
+    try:
+        radarr_key = os.getenv("RADARR_API_KEY", "")
+        radarr_url = os.getenv("RADARR_BASE_URL", "http://localhost:7878")
+        if not radarr_key:
+            return
+
+        headers = {"X-Api-Key": radarr_key, "Content-Type": "application/json"}
+        res = requests.get(f"{radarr_url}/api/v3/manualimport", headers=headers, params={"folder": "/downloads"}, timeout=10)
+        if res.status_code == 200:
+            files = res.json()
+            import_list = []
+            for f in files:
+                if f.get("movie") and not f.get("rejections"):
+                    f["movieId"] = f["movie"]["id"]
+                    import_list.append(f)
+
+            if import_list:
+                logger.info(f"Otomatik Aktarım: {len(import_list)} film kütüphaneye aktarılıyor...")
+                requests.post(f"{radarr_url}/api/v3/manualimport", headers=headers, json=import_list, timeout=15)
+                # Plex kütüphanelerini güncelle
+                try:
+                    for sec_name in ["4K Filmler", "1080p Filmler"]:
+                        sec = plex.server.library.section(sec_name)
+                        if sec:
+                            sec.update()
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.error(f"Otomatik aktarım hatası: {e}")
+
 def cleanup_completed_downloads():
     """Kütüphaneye aktarılmış ve tamamlanmış torrentleri downloads klasöründen temizler (Duplicate önleme)."""
     try:

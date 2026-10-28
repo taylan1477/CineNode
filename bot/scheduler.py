@@ -65,6 +65,17 @@ def setup_scheduler(plex_manager: PlexManager) -> BackgroundScheduler:
         replace_existing=True
     )
 
+    # 2 dakikada bir inmiş filmleri otomatik kütüphaneye aktar ve Plex'i tara
+    from bot.main import auto_import_completed_downloads
+    scheduler.add_job(
+        auto_import_completed_downloads,
+        trigger="interval",
+        minutes=2,
+        id="auto_import_downloads",
+        name="Otomatik Kütüphane Aktarımı ve Plex Taraması",
+        replace_existing=True
+    )
+
     # 5 dakikada bir tamamlanan torrentleri downloads klasöründen temizle (Duplicate engelleme)
     from bot.main import cleanup_completed_downloads
     scheduler.add_job(
