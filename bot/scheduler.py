@@ -76,12 +76,12 @@ def setup_scheduler(plex_manager: PlexManager) -> BackgroundScheduler:
         replace_existing=True
     )
 
-    # 5 dakikada bir tamamlanan torrentleri downloads klasöründen temizle (Duplicate engelleme)
+    # 2 dakikada bir tamamlanan torrentleri downloads klasöründen temizle (Duplicate engelleme)
     from bot.main import cleanup_completed_downloads
     scheduler.add_job(
         cleanup_completed_downloads,
         trigger="interval",
-        minutes=5,
+        minutes=2,
         id="auto_cleanup_downloads",
         name="Otomatik Downloads Duplicate Temizliği",
         replace_existing=True

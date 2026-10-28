@@ -1,7 +1,9 @@
 import os
 import sys
+import shutil
 import asyncio
 import logging
+import requests
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -90,24 +92,68 @@ def auto_import_completed_downloads():
                             sec.update()
                 except Exception:
                     pass
+                # Aktarım yapıldığı için hemen ardından temizliği de çalıştır
+                cleanup_completed_downloads()
     except Exception as e:
         logger.error(f"Otomatik aktarım hatası: {e}")
 
 def cleanup_completed_downloads():
     """Kütüphaneye aktarılmış ve tamamlanmış torrentleri downloads klasöründen temizler (Duplicate önleme)."""
     try:
+        downloads_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media", "downloads")
+        movies_4k_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media", "movies_4k")
+        movies_1080p_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media", "movies_1080p")
         qbit_url = f"http://{os.getenv('QBIT_HOST', 'localhost')}:{os.getenv('QBIT_PORT', '8080')}"
-        res = requests.get(f"{qbit_url}/api/v2/torrents/info", timeout=5)
-        if res.status_code == 200:
-            for t in res.json():
-                # İndirmesi %100 bitmiş ve seed aşamasına geçmiş olanlar
-                if t.get("progress") == 1 and t.get("state") in ["stalledUP", "uploading", "pausedUP"]:
-                    logger.info(f"Duplicate temizliği: {t['name']} downloads klasöründen temizleniyor.")
-                    requests.post(
-                        f"{qbit_url}/api/v2/torrents/delete",
-                        data={"hashes": t["hash"], "deleteFiles": "true"},
-                        timeout=5
-                    )
+
+        # 1. qBittorrent'teki torrentleri kontrol et
+        try:
+            res = requests.get(f"{qbit_url}/api/v2/torrents/info", timeout=5)
+            if res.status_code == 200:
+                for t in res.json():
+                    if t.get("progress") == 1:
+                        t_name = t.get("name", "")
+                        clean_name = t_name.split("[")[0].split("(")[0].strip()
+                        in_lib = False
+                        for lib in [movies_4k_dir, movies_1080p_dir]:
+                            if os.path.exists(lib):
+                                for m in os.listdir(lib):
+                                    if clean_name.lower() in m.lower():
+                                        in_lib = True
+                                        break
+                        if in_lib:
+                            logger.info(f"Duplicate temizliği: {t_name} kütüphaneye aktarıldığı için qBittorrent'ten ve diskten temizleniyor.")
+                            requests.post(
+                                f"{qbit_url}/api/v2/torrents/delete",
+                                data={"hashes": t["hash"], "deleteFiles": "true"},
+                                timeout=5
+                            )
+        except Exception as e:
+            logger.warning(f"qBittorrent torrent silme hatası: {e}")
+
+        # 2. Doğrudan downloads klasöründeki artık dosya/klasörleri kontrol et
+        if os.path.exists(downloads_dir):
+            for item in os.listdir(downloads_dir):
+                item_path = os.path.join(downloads_dir, item)
+                clean_name = item.split("[")[0].split("(")[0].strip()
+                already_in_library = False
+
+                for lib in [movies_4k_dir, movies_1080p_dir]:
+                    if os.path.exists(lib):
+                        for m in os.listdir(lib):
+                            if clean_name.lower() in m.lower():
+                                already_in_library = True
+                                break
+
+                if already_in_library:
+                    logger.info(f"Fiziksel dosya temizliği: {item} kütüphanede mevcut, downloads siliniyor.")
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path, ignore_errors=True)
+                    elif os.path.isfile(item_path):
+                        try:
+                            os.remove(item_path)
+                        except Exception:
+                            pass
+
     except Exception as e:
         logger.error(f"Otomatik indirme temizliği hatası: {e}")
 
