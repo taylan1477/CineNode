@@ -133,6 +133,46 @@ class RadarrClient:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def get_all_movies(self) -> List[Dict[str, Any]]:
+        """Radarr'daki tüm filmleri döner."""
+        if not self.api_key:
+            return []
+        url = f"{self.base_url}/api/v3/movie"
+        try:
+            res = requests.get(url, headers=self.headers, timeout=10)
+            if res.status_code == 200:
+                return res.json()
+        except Exception as e:
+            print(f"Radarr tüm filmleri listeleme hatası: {e}")
+        return []
+
+    def get_queue(self) -> List[Dict[str, Any]]:
+        """Radarr indirme kuyruğundaki filmleri döner."""
+        if not self.api_key:
+            return []
+        url = f"{self.base_url}/api/v3/queue"
+        try:
+            res = requests.get(url, headers=self.headers, timeout=10)
+            if res.status_code == 200:
+                return res.json().get("records", [])
+        except Exception as e:
+            print(f"Radarr kuyruk sorgulama hatası: {e}")
+        return []
+
+    def delete_movie(self, movie_id: int, delete_files: bool = True) -> bool:
+        """Radarr'dan filmi ve diskteki dosyalarını siler."""
+        url = f"{self.base_url}/api/v3/movie/{movie_id}"
+        params = {
+            "deleteFiles": "true" if delete_files else "false",
+            "addImportListExclusion": "false"
+        }
+        try:
+            res = requests.delete(url, headers=self.headers, params=params, timeout=10)
+            return res.status_code in [200, 204]
+        except Exception as e:
+            print(f"Radarr film silme hatası: {e}")
+            return False
+
     def get_live_torrents(self) -> List[Dict[str, Any]]:
         """qBittorrent'ten anlık canlı indirme hızlarını ve ilerlemeleri döner."""
         try:

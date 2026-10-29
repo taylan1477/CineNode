@@ -21,6 +21,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from bot.radarr_client import RadarrClient
 from bot.plex_client import PlexManager
 from bot.scheduler import setup_scheduler
+from bot.favorites import FavoritesManager
 
 load_dotenv()
 
@@ -32,6 +33,7 @@ logger = logging.getLogger("CineBot")
 
 radarr = RadarrClient()
 plex = PlexManager()
+favorites_mgr = FavoritesManager()
 
 # Canlı takip görevlerini yönetmek için (chat_id -> asyncio.Task)
 ACTIVE_TRACKERS = {}
@@ -44,6 +46,17 @@ def is_user_authorized(user_id: int) -> bool:
         return True
     allowed_ids = [int(i.strip()) for i in allowed_ids_raw.split(",") if i.strip()]
     return user_id in allowed_ids
+
+def is_admin(user_id: int) -> bool:
+    admin_raw = os.getenv("ADMIN_TELEGRAM_USER_ID", "")
+    if admin_raw:
+        admin_ids = [int(i.strip()) for i in admin_raw.split(",") if i.strip()]
+        return user_id in admin_ids
+    allowed_raw = os.getenv("ALLOWED_TELEGRAM_USER_IDS", "")
+    if allowed_raw:
+        allowed_ids = [int(i.strip()) for i in allowed_raw.split(",") if i.strip()]
+        return user_id == allowed_ids[0]
+    return False
 
 def render_progress_bar(percentage: float, length: int = 10) -> str:
     """Yüzdeye göre görsel ilerleme çubuğu üretir: [████░░░░░░]"""
@@ -163,8 +176,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎬 *CineNode Bot'a Hoş Geldiniz, {user.first_name}!*\n\n"
         "CineNode film yayın ağımız için istek ve canlı takip botudur.\n\n"
         "📌 *Komutlar:*\n"
-        "• `/istek <Film Adı>` : Film arar, size **1080p mi 2160p (4K) mı** istediğinizi sorar ve indirmeyi başlatır.\n"
+        "• `/istek <Film Adı>` : Film arar, kalite seçtirir ve indirmeyi başlatır.\n"
         "• `/durum` : Aktif indirmeleri **gerçek zamanlı (canlı)** olarak takip eder.\n"
+        "• `/depo` : Disk doluluğunu ve filmleri gösterir (Silme / Favoriye alma).\n"
         "• `/vardiya` : Yayın saatini ve aktif izleyicileri listeler.\n"
         "• `/yardim` : Altın kuralları hatırlatır."
     )
@@ -530,6 +544,292 @@ async def shift_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+def build_depo_view():
+    TOTAL_STORAGE_GB = 64.0
+    movies = radarr.get_all_movies()
+    queue = {q.get("movieId"): q for q in radarr.get_queue() if q.get("movieId")}
+
+    movies_data = []
+    total_used_bytes = 0
+
+    for m in movies:
+        m_id = m.get("id")
+        title = m.get("title", "Bilinmeyen Film")
+        year = m.get("year", "")
+        qual_id = m.get("qualityProfileId", 4)
+        size_bytes = m.get("sizeOnDisk", 0)
+
+        status_extra = ""
+        if not size_bytes and m_id in queue:
+            q_item = queue[m_id]
+            size_bytes = q_item.get("size", 0)
+            size_left = q_item.get("sizeleft", 0)
+            pct = 0
+            if size_bytes > 0:
+                pct = int(((size_bytes - size_left) / size_bytes) * 100)
+            status_extra = f" *(İniyor %{pct})*"
+        elif not size_bytes and m.get("movieFile"):
+            size_bytes = m["movieFile"].get("size", 0)
+
+        total_used_bytes += size_bytes
+        size_gb = round(size_bytes / (1024**3), 2)
+
+        qual_names = {4: "1080p", 7: "Kompakt 4K", 5: "Full 4K"}
+        qual_tag = qual_names.get(qual_id, "Diğer")
+
+        is_fav = favorites_mgr.is_favorite(m_id)
+        fav_obj = favorites_mgr.get_favorite(m_id) if is_fav else None
+
+        movies_data.append({
+            "id": m_id,
+            "title": title,
+            "year": year,
+            "qual_id": qual_id,
+            "qual_tag": qual_tag,
+            "size_gb": size_gb,
+            "status_extra": status_extra,
+            "is_fav": is_fav,
+            "fav_obj": fav_obj
+        })
+
+    # Boyuta göre büyükten küçüğe sırala
+    movies_data.sort(key=lambda x: x["size_gb"], reverse=True)
+
+    used_gb = round(total_used_bytes / (1024**3), 2)
+    percent = round((used_gb / TOTAL_STORAGE_GB) * 100, 1)
+    bar = render_progress_bar(min(percent, 100.0), length=10)
+
+    text = (
+        f"📦 *CineNode Depolama Durumu*\n"
+        f"`[{bar}]` *{used_gb} GB / {TOTAL_STORAGE_GB:.1f} GB* (`%{percent}`)\n\n"
+        f"🎬 *Kütüphanedeki Filmler ({len(movies_data)}):*\n"
+    )
+
+    if not movies_data:
+        text += "_Kütüphanede kayıtlı film bulunmuyor._\n"
+    else:
+        for idx, md in enumerate(movies_data, 1):
+            fav_icon = ""
+            if md["is_fav"]:
+                u_name = md["fav_obj"].get("user_name", "")
+                fav_icon = f" ⭐ _(@{u_name})_" if u_name else " ⭐"
+            text += f"{idx}. *{md['title']} ({md['year']})* [{md['qual_tag']}] — `{md['size_gb']} GB`{md['status_extra']}{fav_icon}\n"
+
+    text += "\n👇 _Film silmek veya favoriye almak için butona tıklayın:_"
+
+    keyboard = []
+    row = []
+    for md in movies_data:
+        short_title = md["title"]
+        if len(short_title) > 16:
+            short_title = short_title[:15] + "…"
+        fav_prefix = "⭐ " if md["is_fav"] else "🎬 "
+        btn_text = f"{fav_prefix}{short_title}"
+        row.append(InlineKeyboardButton(btn_text, callback_data=f"depo_view_{md['id']}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    keyboard.append([InlineKeyboardButton("🔄 Depoyu Yenile", callback_data="depo_refresh")])
+    return text, InlineKeyboardMarkup(keyboard)
+
+async def depo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_user_authorized(user_id):
+        await update.message.reply_text("⛔ Bu komutu kullanma yetkiniz bulunmuyor.")
+        return
+
+    text, markup = build_depo_view()
+    await update.message.reply_text(text, reply_markup=markup, parse_mode="Markdown")
+
+async def depo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    user = update.effective_user
+    user_id = user.id
+    user_name = user.username or user.first_name or str(user_id)
+    user_is_admin = is_admin(user_id)
+
+    if data in ["depo_refresh", "depo_list"]:
+        text, markup = build_depo_view()
+        try:
+            await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+        except Exception:
+            pass
+        return
+
+    if data.startswith("depo_view_"):
+        movie_id = int(data.split("_")[2])
+        movie = radarr.get_movie_by_id(movie_id)
+        if not movie:
+            await query.answer("Film bulunamadı.", show_alert=True)
+            return
+
+        title = movie.get("title")
+        year = movie.get("year")
+        qual_id = movie.get("qualityProfileId", 4)
+        qual_names = {4: "1080p Full HD", 7: "Kompakt 2160p (4K Hafif)", 5: "Full 2160p (4K Master)"}
+        qual_name = qual_names.get(qual_id, "Diğer")
+
+        size_bytes = movie.get("sizeOnDisk", 0)
+        if not size_bytes and movie.get("movieFile"):
+            size_bytes = movie["movieFile"].get("size", 0)
+        size_gb = round(size_bytes / (1024**3), 2)
+
+        is_fav = favorites_mgr.is_favorite(movie_id)
+        fav_obj = favorites_mgr.get_favorite(movie_id) if is_fav else None
+
+        if is_fav:
+            fav_text = f"⭐ Evet (Favorileyen: @{fav_obj.get('user_name', 'Bilinmiyor')})"
+        else:
+            fav_text = "Hayır"
+
+        user_pts = favorites_mgr.get_user_used_points(user_id)
+        cost_pts = favorites_mgr.get_quality_points(qual_id)
+
+        detail_text = (
+            f"🎬 *{title} ({year})*\n\n"
+            f"• 📼 *Kalite:* {qual_name} ({cost_pts} Puan)\n"
+            f"• 💾 *Boyut:* `{size_gb} GB`\n"
+            f"• ⭐ *Favori:* {fav_text}\n"
+            f"• 👤 *Sizin Favori Kotanız:* {user_pts}/4 Puan\n\n"
+            "ℹ️ _Favori kuralları: 1 Full 4K (4p), 2 Kompakt 4K (2x2p) veya 4 1080p (4x1p)._\n"
+            "_Favorilenen film asla silinmez, yalnızca favorileyen veya admin silebilir._"
+        )
+
+        buttons = []
+        if is_fav:
+            buttons.append([InlineKeyboardButton("⭐ Favoriden Çıkar", callback_data=f"depo_unfav_{movie_id}")])
+        else:
+            buttons.append([InlineKeyboardButton(f"⭐ Favoriye Al ({cost_pts} Puan)", callback_data=f"depo_fav_{movie_id}")])
+
+        buttons.append([InlineKeyboardButton("🗑️ Filmi Sil", callback_data=f"depo_delask_{movie_id}")])
+        buttons.append([InlineKeyboardButton("🔙 Film Listesine Dön", callback_data="depo_list")])
+
+        await query.edit_message_text(detail_text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        return
+
+    if data.startswith("depo_fav_"):
+        movie_id = int(data.split("_")[2])
+        movie = radarr.get_movie_by_id(movie_id)
+        if not movie:
+            await query.answer("Film bulunamadı.", show_alert=True)
+            return
+
+        title = movie.get("title")
+        qual_id = movie.get("qualityProfileId", 4)
+        success, msg = favorites_mgr.add_favorite(movie_id, title, user_id, user_name, qual_id)
+
+        if not success:
+            await query.answer(msg, show_alert=True)
+            return
+
+        await query.answer("Film favorilere eklendi! ⭐", show_alert=False)
+        query.data = f"depo_view_{movie_id}"
+        await depo_callback_handler(update, context)
+        return
+
+    if data.startswith("depo_unfav_"):
+        movie_id = int(data.split("_")[2])
+        success, msg = favorites_mgr.remove_favorite(movie_id, user_id, is_admin=user_is_admin)
+
+        if not success:
+            await query.answer(msg, show_alert=True)
+            return
+
+        await query.answer("Film favorilerden çıkarıldı.", show_alert=False)
+        query.data = f"depo_view_{movie_id}"
+        await depo_callback_handler(update, context)
+        return
+
+    if data.startswith("depo_delask_"):
+        movie_id = int(data.split("_")[2])
+        movie = radarr.get_movie_by_id(movie_id)
+        if not movie:
+            await query.answer("Film bulunamadı.", show_alert=True)
+            return
+
+        can_del, reason = favorites_mgr.can_delete_movie(movie_id, user_id, is_admin=user_is_admin)
+        if not can_del:
+            await query.answer(reason, show_alert=True)
+            return
+
+        title = movie.get("title")
+        year = movie.get("year")
+        is_fav = favorites_mgr.is_favorite(movie_id)
+
+        extra_warn = "\n⚠️ *Not:* Bu film favorilerinizde ekli; silinirse favorilerden de kaldırılacaktır." if is_fav else ""
+
+        confirm_text = (
+            f"🗑️ *Film Silme Onayı*\n\n"
+            f"*{title} ({year})* filmini kütüphaneden ve diskten tamamen silmek istediğinize emin misiniz?{extra_warn}\n\n"
+            "Bu işlem geri alınamaz ve diskteki dosya anında silinir."
+        )
+
+        buttons = [
+            [
+                InlineKeyboardButton("🗑️ Evet, Tamamen Sil", callback_data=f"depo_delconfirm_{movie_id}")
+            ],
+            [
+                InlineKeyboardButton("❌ İptal", callback_data=f"depo_view_{movie_id}")
+            ]
+        ]
+        await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        return
+
+    if data.startswith("depo_delconfirm_"):
+        movie_id = int(data.split("_")[2])
+        movie = radarr.get_movie_by_id(movie_id)
+        if not movie:
+            await query.answer("Film zaten silinmiş veya bulunamadı.", show_alert=True)
+            return
+
+        can_del, reason = favorites_mgr.can_delete_movie(movie_id, user_id, is_admin=user_is_admin)
+        if not can_del:
+            await query.answer(reason, show_alert=True)
+            return
+
+        title = movie.get("title")
+        movie_path = movie.get("path")
+
+        await query.edit_message_text(f"⏳ *{title}* siliniyor...", parse_mode="Markdown")
+
+        # 1. Radarr'dan sil
+        deleted = radarr.delete_movie(movie_id, delete_files=True)
+        # 2. Favorilerde varsa kaldır
+        if favorites_mgr.is_favorite(movie_id):
+            favorites_mgr.remove_favorite(movie_id, user_id, is_admin=True)
+
+        # 3. Disk klasörü boş kaldıysa temizle
+        if movie_path and os.path.exists(movie_path):
+            try:
+                shutil.rmtree(movie_path, ignore_errors=True)
+            except Exception:
+                pass
+
+        # 4. Plex kütüphanelerini güncelle
+        try:
+            for sec_name in ["4K Filmler", "1080p Filmler"]:
+                sec = plex.server.library.section(sec_name)
+                if sec:
+                    sec.update()
+        except Exception:
+            pass
+
+        done_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Depo Listesine Dön", callback_data="depo_list")]
+        ])
+        await query.edit_message_text(
+            f"✅ *{title}* kütüphaneden ve diskten başarıyla silindi.\nDiskte yer açıldı.",
+            reply_markup=done_markup,
+            parse_mode="Markdown"
+        )
+        return
+
 def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -548,8 +848,10 @@ def main():
     app.add_handler(CommandHandler("istek", request_command))
     app.add_handler(CommandHandler("durum", status_command))
     app.add_handler(CommandHandler("vardiya", shift_command))
+    app.add_handler(CommandHandler("depo", depo_command))
     app.add_handler(CallbackQueryHandler(quality_callback_handler, pattern=r"^qual_"))
     app.add_handler(CallbackQueryHandler(stop_track_callback, pattern=r"^stop_track_"))
+    app.add_handler(CallbackQueryHandler(depo_callback_handler, pattern=r"^depo_"))
 
     logger.info("CineBot hazır ve dinliyor...")
     
