@@ -231,9 +231,6 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     best_match = results[0]
     title = best_match.get("title")
     year = best_match.get("year", "Bilinmiyor")
-    overview = best_match.get("overview", "Açıklama bulunmuyor.")
-    if len(overview) > 250:
-        overview = overview[:250] + "..."
 
     # Kullanıcı için bekleyen isteği kaydet
     PENDING_REQUESTS[user_id] = best_match
@@ -255,7 +252,6 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         f"🎬 *{title} ({year})* bulundu!\n\n"
-        f"📖 _{overview}_\n\n"
         "📥 *Hangi kalitede indirmek istersiniz?*\n"
         "• `1080p` : Standart Full HD (Hızlı ve hafif)\n"
         "• `Kompakt 2160p` : 4K çözünürlük (~7 GB, disk ve upload dostu)\n"
