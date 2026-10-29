@@ -52,6 +52,87 @@ class RadarrClient:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def get_existing_movie(self, tmdb_id: Optional[int] = None, title: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Kütüphanede bu filmin zaten var olup olmadığını döner."""
+        if not self.api_key:
+            return None
+        url = f"{self.base_url}/api/v3/movie"
+        try:
+            res = requests.get(url, headers=self.headers, timeout=10)
+            if res.status_code == 200:
+                movies = res.json()
+                for m in movies:
+                    if tmdb_id and m.get("tmdbId") == tmdb_id:
+                        return m
+                    if title and m.get("title", "").strip().lower() == title.strip().lower():
+                        return m
+        except Exception as e:
+            print(f"Radarr film listesi sorgulama hatası: {e}")
+        return None
+
+    def get_movie_by_id(self, movie_id: int) -> Optional[Dict[str, Any]]:
+        """ID'ye göre film detayını çeker."""
+        url = f"{self.base_url}/api/v3/movie/{movie_id}"
+        try:
+            res = requests.get(url, headers=self.headers, timeout=10)
+            if res.status_code == 200:
+                return res.json()
+        except Exception as e:
+            print(f"Radarr film detayı hatası: {e}")
+        return None
+
+    def delete_movie_file(self, movie_file_id: int) -> bool:
+        """Radarr üzerindeki film dosyasını ve fiziksel diskteki kopyasını siler."""
+        url = f"{self.base_url}/api/v3/moviefile/{movie_file_id}"
+        try:
+            res = requests.delete(url, headers=self.headers, timeout=10)
+            return res.status_code in [200, 204]
+        except Exception as e:
+            print(f"Radarr dosya silme hatası: {e}")
+            return False
+
+    def upgrade_movie_quality(self, movie_id: int, new_quality_profile_id: int, target_root_folder: str, delete_existing_file: bool = True) -> Dict[str, Any]:
+        """Film kalite profilini günceller, eski dosyayı siler ve yeni kalite için arama tetikler."""
+        movie = self.get_movie_by_id(movie_id)
+        if not movie:
+            return {"success": False, "error": "Film bulunamadı."}
+
+        # 1. Eski dosya varsa diskten sil (anında yer aç)
+        if delete_existing_file:
+            movie_file_id = movie.get("movieFileId") or (movie.get("movieFile") or {}).get("id")
+            if movie_file_id:
+                deleted = self.delete_movie_file(movie_file_id)
+                if not deleted:
+                    print(f"Uyarı: movie_file_id {movie_file_id} silinemedi.")
+
+        # 2. Kalite profili ve kök klasörü güncelle
+        movie["qualityProfileId"] = new_quality_profile_id
+        movie["monitored"] = True
+        if target_root_folder:
+            movie["rootFolderPath"] = target_root_folder
+            folder_name = os.path.basename(movie.get("path", "").rstrip("/\\"))
+            if not folder_name:
+                folder_name = f"{movie.get('title')} ({movie.get('year')})"
+            movie["path"] = f"{target_root_folder.rstrip('/')}/{folder_name}"
+
+        put_url = f"{self.base_url}/api/v3/movie/{movie_id}"
+        try:
+            put_res = requests.put(put_url, headers=self.headers, json=movie, timeout=10)
+            if put_res.status_code not in [200, 202]:
+                return {"success": False, "error": f"Güncelleme başarısız: {put_res.text}"}
+
+            # 3. Yeni kalite için otomatik arama tetikle
+            cmd_url = f"{self.base_url}/api/v3/command"
+            cmd_res = requests.post(
+                cmd_url,
+                headers=self.headers,
+                json={"name": "MoviesSearch", "movieIds": [movie_id]},
+                timeout=10
+            )
+            return {"success": True, "movie": put_res.json(), "command": cmd_res.json() if cmd_res.status_code in [200, 201] else {}}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def get_live_torrents(self) -> List[Dict[str, Any]]:
         """qBittorrent'ten anlık canlı indirme hızlarını ve ilerlemeleri döner."""
         try:

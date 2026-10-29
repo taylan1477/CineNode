@@ -244,6 +244,63 @@ async def quality_callback_handler(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text("❌ Film isteği iptal edildi.")
         return
 
+    # Kalite yükseltme / eskiyi silip yeniyi indirme onayı
+    if data.startswith("qual_upg_"):
+        parts = data.split("_")
+        movie_id = int(parts[2])
+        quality_id = int(parts[3])
+        req_user_id = int(parts[4])
+
+        if user_id != req_user_id:
+            await query.answer("Bu seçimi yalnızca isteği yapan kişi kullanabilir.", show_alert=True)
+            return
+
+        if quality_id == 4:
+            quality_name = "1080p Full HD"
+            target_folder = "/media/movies_1080p"
+        elif quality_id == 7:
+            quality_name = "Kompakt 2160p (4K Hafif)"
+            target_folder = "/media/movies_4k"
+        elif quality_id == 5:
+            quality_name = "Full 2160p (4K Master)"
+            target_folder = "/media/movies_4k"
+        else:
+            quality_name = "Otomatik Kalite"
+            target_folder = "/media/movies_1080p"
+
+        await query.edit_message_text(f"⏳ Eski dosya siliniyor ve *[{quality_name}]* indirmesi başlatılıyor...", parse_mode="Markdown")
+
+        res = radarr.upgrade_movie_quality(
+            movie_id=movie_id,
+            new_quality_profile_id=quality_id,
+            target_root_folder=target_folder,
+            delete_existing_file=True
+        )
+
+        if res.get("success"):
+            # Plex kütüphanesini güncelle
+            try:
+                for sec_name in ["4K Filmler", "1080p Filmler"]:
+                    sec = plex.server.library.section(sec_name)
+                    if sec:
+                        sec.update()
+            except Exception:
+                pass
+
+            reply = (
+                f"✅ *Kalite Güncellemesi Başlatıldı!*\n\n"
+                f"• Yeni Kalite: *[{quality_name}]*\n"
+                "• Eski dosya diskten silinerek yer açıldı.\n"
+                "• qBittorrent yeni kaliteyi indirmeye başladı.\n\n"
+                "İlerlemeyi canlı izlemek için `/durum` yazabilirsiniz."
+            )
+        else:
+            err = res.get("error", "Bilinmeyen hata")
+            reply = f"⚠️ Güncelleme sırasında hata oluştu: {err}"
+
+        await query.edit_message_text(reply, parse_mode="Markdown")
+        return
+
     if data.startswith("qual_"):
         parts = data.split("_")
         quality_id = int(parts[1])
@@ -273,6 +330,52 @@ async def quality_callback_handler(update: Update, context: ContextTypes.DEFAULT
         else:
             quality_name = "Otomatik Kalite"
             target_folder = "/media/movies_1080p"
+
+        # Film kütüphanede zaten var mı kontrol et
+        existing_movie = radarr.get_existing_movie(tmdb_id=movie_data.get("tmdbId"), title=title)
+        if existing_movie:
+            curr_profile_id = existing_movie.get("qualityProfileId")
+            has_file = existing_movie.get("hasFile", False)
+            profile_names = {
+                4: "1080p Full HD",
+                7: "Kompakt 2160p (4K Hafif)",
+                5: "Full 2160p (4K Master)"
+            }
+            curr_quality_name = profile_names.get(curr_profile_id, f"Profil {curr_profile_id}")
+
+            # Aynı kalite seçilmişse ve dosya zaten inmişse işlemi durdur
+            if curr_profile_id == quality_id and has_file:
+                reply = (
+                    f"ℹ️ *{title} ({year})* zaten seçtiğiniz kalitede (*{quality_name}*) kütüphanenizde mevcut.\n\n"
+                    "Farklı bir kaliteye geçmek isterseniz tekrar `/istek` yazıp diğer seçenekleri belirleyebilirsiniz."
+                )
+                await query.edit_message_text(reply, parse_mode="Markdown")
+                return
+
+            # Farklı kalite seçilmişse: Onay butonları göster
+            confirm_keyboard = [
+                [
+                    InlineKeyboardButton(
+                        "🗑️ Eski Dosyayı Sil & Yeniyi İndir",
+                        callback_data=f"qual_upg_{existing_movie['id']}_{quality_id}_{user_id}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton("❌ İptal", callback_data=f"qual_cancel_{user_id}")
+                ]
+            ]
+            confirm_text = (
+                f"⚠️ *{title} ({year})* zaten kütüphanede mevcut!\n\n"
+                f"• 📼 *Mevcut Kalite:* {curr_quality_name}\n"
+                f"• 🚀 *İstenen Yeni Kalite:* {quality_name}\n\n"
+                "❓ Eski sürüm diskten silinip 1TB diskte yer açıldıktan sonra yeni kalite indirilsin mi?"
+            )
+            await query.edit_message_text(
+                confirm_text,
+                reply_markup=InlineKeyboardMarkup(confirm_keyboard),
+                parse_mode="Markdown"
+            )
+            return
 
         await query.edit_message_text(f"⏳ *{title} ({year})* [{quality_name}] indirme sırasına ekleniyor...", parse_mode="Markdown")
 
