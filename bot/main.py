@@ -88,15 +88,32 @@ def auto_import_completed_downloads():
         res = requests.get(f"{radarr_url}/api/v3/manualimport", headers=headers, params={"folder": "/downloads"}, timeout=10)
         if res.status_code == 200:
             files = res.json()
-            import_list = []
-            for f in files:
-                if f.get("movie") and not f.get("rejections"):
-                    f["movieId"] = f["movie"]["id"]
-                    import_list.append(f)
+            queue_records = radarr.get_queue()
+            queue_map = {q.get("outputPath"): q.get("movieId") for q in queue_records if q.get("outputPath") and q.get("movieId")}
 
-            if import_list:
-                logger.info(f"Otomatik Aktarım: {len(import_list)} film kütüphaneye aktarılıyor...")
-                requests.post(f"{radarr_url}/api/v3/manualimport", headers=headers, json=import_list, timeout=15)
+            import_files = []
+            for f in files:
+                movie_id = f.get("movieId") or (f.get("movie") or {}).get("id")
+                if not movie_id:
+                    movie_id = queue_map.get(f.get("path"))
+
+                if movie_id:
+                    import_files.append({
+                        "path": f["path"],
+                        "movieId": movie_id,
+                        "quality": f.get("quality"),
+                        "languages": f.get("languages", [{"id": 1, "name": "English"}]),
+                        "indexerFlags": 0
+                    })
+
+            if import_files:
+                logger.info(f"Otomatik Aktarım: {len(import_files)} film kütüphaneye taşınıyor...")
+                cmd_payload = {
+                    "name": "ManualImport",
+                    "files": import_files,
+                    "importMode": "Move"
+                }
+                requests.post(f"{radarr_url}/api/v3/command", headers=headers, json=cmd_payload, timeout=15)
                 # Plex kütüphanelerini güncelle
                 try:
                     for sec_name in ["4K Filmler", "1080p Filmler"]:
