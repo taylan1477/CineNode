@@ -7,6 +7,7 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import RetryAfter, BadRequest
 from telegram.request import HTTPXRequest
 from telegram.ext import (
     ApplicationBuilder,
@@ -447,18 +448,58 @@ async def quality_callback_handler(update: Update, context: ContextTypes.DEFAULT
 
         await query.edit_message_text(reply, parse_mode="Markdown")
 
-async def live_tracker_task(chat_id: int, message_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Her 2.5 saniyede bir aynı mesajı güncelleyerek canlı ilerleme gösterir."""
+def build_live_tracker_view(torrents: List[Dict[str, Any]], chat_id: int):
+    msg = "📡 *CineNode Canlı İndirme Takibi:*\n\n"
+    for t in torrents[:4]:
+        name = t.get("name", "Film")
+        if len(name) > 35:
+            name = name[:35] + "..."
+        prog = t.get("progress", 0)
+        bar = render_progress_bar(prog, 12)
+        speed = t.get("dlspeed", 0)
+        left = t.get("amount_left", 0)
+        size = t.get("size", 0)
+        eta_str = format_eta(t.get("eta", 0))
+
+        msg += (
+            f"🎬 *{name}*\n"
+            f"`[{bar}]` *%{prog}*\n"
+            f"⚡ Hız: `{speed} MB/s` | 💾 Kalan: `{left} GB` / `{size} GB`\n"
+            f"⏳ Kalan Süre: `{eta_str}` | 🌱 Seed: `{t.get('seeds', 0)}`\n\n"
+        )
+
+    now_str = datetime.now().strftime("%H:%M:%S")
+    msg += f"_(Son güncelleme: {now_str} • Canlı güncellenir)_"
+
+    keyboard = []
+    for t in torrents[:4]:
+        t_hash = t.get("hash")
+        t_name = t.get("name", "Film")
+        if t_hash:
+            if len(torrents) == 1:
+                btn_label = "🛑 İndirmeyi İptal Et"
+            else:
+                clean_name = t_name.split(".")[0].replace("_", " ")
+                if len(clean_name) > 18:
+                    clean_name = clean_name[:17] + "…"
+                btn_label = f"🛑 İndirmeyi İptal Et ({clean_name})"
+            keyboard.append([InlineKeyboardButton(btn_label, callback_data=f"cancel_dl_{t_hash}")])
+
+    keyboard.append([InlineKeyboardButton("⏹️ Canlı Takibi Durdur", callback_data=f"stop_track_{chat_id}")])
+    return msg, InlineKeyboardMarkup(keyboard)
+
+async def live_tracker_task(chat_id: int, message_id: int, context: ContextTypes.DEFAULT_TYPE, initial_text: str = ""):
+    """Belirli aralıklarla mesajı güncelleyerek canlı ilerleme gösterir."""
     logger.info(f"Canlı takipçi başlatıldı: Chat {chat_id}")
-    last_text = ""
+    last_text = initial_text
     unchanged_count = 0
 
     try:
         while True:
-            torrents = radarr.get_live_torrents()
+            await asyncio.sleep(4.0)
 
+            torrents = radarr.get_live_torrents()
             if not torrents:
-                # İnen torrent yoksa veya bittiyse
                 finish_text = (
                     "🎉 *Tüm İndirmeler Tamamlandı!*\n\n"
                     "Dosyalar organize edilip Plex kütüphanesine aktarılıyor. İyi seyirler! 🍿"
@@ -474,44 +515,7 @@ async def live_tracker_task(chat_id: int, message_id: int, context: ContextTypes
                     pass
                 break
 
-            msg = "📡 *CineNode Canlı İndirme Takibi:*\n\n"
-            for t in torrents[:4]:
-                name = t["name"]
-                if len(name) > 35:
-                    name = name[:35] + "..."
-                prog = t["progress"]
-                bar = render_progress_bar(prog, 12)
-                speed = t["dlspeed"]
-                left = t["amount_left"]
-                size = t["size"]
-                eta_str = format_eta(t["eta"])
-
-                msg += (
-                    f"🎬 *{name}*\n"
-                    f"`[{bar}]` *%{prog}*\n"
-                    f"⚡ Hız: `{speed} MB/s` | 💾 Kalan: `{left} GB` / `{size} GB`\n"
-                    f"⏳ Kalan Süre: `{eta_str}` | 🌱 Seed: `{t['seeds']}`\n\n"
-                )
-
-            now_str = datetime.now().strftime("%H:%M:%S")
-            msg += f"_(Son güncelleme: {now_str} • Her ~2.5 sn canlı güncellenir)_"
-
-            keyboard = []
-            for t in torrents[:4]:
-                t_hash = t.get("hash")
-                t_name = t.get("name", "Film")
-                if t_hash:
-                    if len(torrents) == 1:
-                        btn_label = "🛑 İndirmeyi İptal Et"
-                    else:
-                        clean_name = t_name.split(".")[0].replace("_", " ")
-                        if len(clean_name) > 18:
-                            clean_name = clean_name[:17] + "…"
-                        btn_label = f"🛑 İndirmeyi İptal Et ({clean_name})"
-                    keyboard.append([InlineKeyboardButton(btn_label, callback_data=f"cancel_dl_{t_hash}")])
-
-            keyboard.append([InlineKeyboardButton("⏹️ Canlı Takibi Durdur", callback_data=f"stop_track_{chat_id}")])
-            reply_markup = InlineKeyboardMarkup(keyboard)
+            msg, reply_markup = build_live_tracker_view(torrents, chat_id)
 
             if msg != last_text:
                 try:
@@ -524,14 +528,22 @@ async def live_tracker_task(chat_id: int, message_id: int, context: ContextTypes
                     )
                     last_text = msg
                     unchanged_count = 0
+                except RetryAfter as e:
+                    logger.warning(f"Telegram flood kontrolü: {e.retry_after} sn bekleniyor...")
+                    await asyncio.sleep(e.retry_after + 1.0)
+                except BadRequest as e:
+                    if "Message is not modified" in str(e):
+                        last_text = msg
+                    elif "Message to edit not found" in str(e):
+                        break
+                    else:
+                        logger.warning(f"Telegram BadRequest: {e}")
                 except Exception as e:
-                    logger.debug(f"Canlı mesaj güncelleme atlandı: {e}")
+                    logger.debug(f"Canlı mesaj güncelleme hatası: {e}")
             else:
                 unchanged_count += 1
-                if unchanged_count > 60: # 2.5 dakika boyunca hiç değişmediyse durdur
+                if unchanged_count > 45: # ~3 dakika boyunca hiç değişmediyse durdur
                     break
-
-            await asyncio.sleep(2.5)
 
     except asyncio.CancelledError:
         logger.info(f"Canlı takip kullanıcı tarafından durduruldu: {chat_id}")
@@ -550,11 +562,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("💤 Şu anda aktif inen bir film bulunmuyor.")
         return
 
-    # İlk mesajı at
-    init_msg = await update.message.reply_text("🔄 Canlı indirme takibi başlatılıyor...", parse_mode="Markdown")
+    # İlk mesajı beklemeden doğrudan gerçek veriler ve butonlarla gönder
+    init_msg, init_markup = build_live_tracker_view(torrents, chat_id)
+    sent_msg = await update.message.reply_text(init_msg, reply_markup=init_markup, parse_mode="Markdown")
 
     # Arka plan canlı güncelleme task'ını başlat
-    task = asyncio.create_task(live_tracker_task(chat_id, init_msg.message_id, context))
+    task = asyncio.create_task(live_tracker_task(chat_id, sent_msg.message_id, context, initial_text=init_msg))
     ACTIVE_TRACKERS[chat_id] = task
 
 async def stop_track_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
