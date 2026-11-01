@@ -14,6 +14,8 @@ class RadarrClient:
             "Content-Type": "application/json"
         }
         self.qbit_url = f"http://{os.getenv('QBIT_HOST', 'localhost')}:{os.getenv('QBIT_PORT', '8080')}"
+        self.prowlarr_url = (os.getenv("PROWLARR_BASE_URL", "http://localhost:9996")).rstrip("/")
+        self.prowlarr_key = os.getenv("PROWLARR_API_KEY", "f8a17479564d4a839d352a77bdac2a3c")
 
     def search_movie(self, title: str) -> List[Dict[str, Any]]:
         """Radarr üzerinde film arar."""
@@ -195,3 +197,97 @@ class RadarrClient:
         except Exception as e:
             print(f"qBittorrent canlı veri hatası: {e}")
         return []
+
+    def get_torrent_candidates(self, title: str, year: Optional[int] = None) -> Dict[str, Any]:
+        """Prowlarr üzerinden 1080p, Kompakt 4K ve Full 4K için seeder ve ETA analizi yapar."""
+        headers = {"X-Api-Key": self.prowlarr_key}
+        query = f"{title} {year}" if year else title
+        releases = []
+
+        try:
+            r = requests.get(
+                f"{self.prowlarr_url}/api/v1/search",
+                headers=headers,
+                params={"query": query, "categories": [2000]},
+                timeout=12
+            )
+            if r.status_code == 200:
+                releases = r.json()
+            if not releases and year:
+                r = requests.get(
+                    f"{self.prowlarr_url}/api/v1/search",
+                    headers=headers,
+                    params={"query": title, "categories": [2000]},
+                    timeout=12
+                )
+                if r.status_code == 200:
+                    releases = r.json()
+        except Exception as e:
+            print(f"Prowlarr torrent arama hatası: {e}")
+
+        valid = []
+        for rel in releases:
+            t = rel.get("title", "").lower()
+            if any(bad in t for bad in [".exe", "telesync", "camrip", "hdcam", "hdtc", "sample"]):
+                continue
+            valid.append(rel)
+
+        t1080 = [
+            x for x in valid
+            if ("1080" in x.get("title", "").lower() or "fhd" in x.get("title", "").lower())
+            and not ("2160" in x.get("title", "").lower() or "4k" in x.get("title", "").lower())
+        ]
+        t4k = [x for x in valid if "2160" in x.get("title", "").lower() or "4k" in x.get("title", "").lower()]
+
+        t_kompakt = [x for x in t4k if x.get("size", 0) <= 15 * (1024**3)]
+        t_full = [x for x in t4k if x.get("size", 0) > 15 * (1024**3)]
+
+        def format_eta_badge(size_bytes: int, seeders: int):
+            if seeders <= 0 or size_bytes <= 0:
+                return "İndirilemez", "❌ Seeder Yok"
+            if seeders >= 50:
+                speed_bytes = 35 * 1024 * 1024
+                badge = "⚡ Çok Hızlı"
+            elif seeders >= 15:
+                speed_bytes = 12 * 1024 * 1024
+                badge = "🚀 Hızlı"
+            elif seeders >= 5:
+                speed_bytes = 3 * 1024 * 1024
+                badge = "⏳ Normal"
+            else:
+                speed_bytes = 600 * 1024
+                badge = "⚠️ Yavaş"
+
+            seconds = int(size_bytes / speed_bytes)
+            if seconds < 60:
+                time_str = f"~{seconds} sn"
+            elif seconds < 3600:
+                time_str = f"~{seconds // 60} dk"
+            elif seconds < 86400:
+                hrs = seconds // 3600
+                mins = (seconds % 3600) // 60
+                time_str = f"~{hrs} sa {mins} dk" if mins else f"~{hrs} sa"
+            else:
+                days = round(seconds / 86400, 1)
+                time_str = f"~{days} gün"
+            return time_str, badge
+
+        def parse_tier(candidates):
+            if not candidates:
+                return {"found": False, "seeders": 0, "size_gb": 0.0, "summary": "❌ Torrent Yok"}
+            best = max(candidates, key=lambda x: x.get("seeders", 0))
+            seeders = best.get("seeders", 0)
+            size_bytes = best.get("size", 0)
+            size_gb = round(size_bytes / (1024**3), 2)
+            if seeders <= 0:
+                return {"found": False, "seeders": 0, "size_gb": size_gb, "summary": f"{size_gb} GB | ❌ 0 Seed (İnmez)"}
+            eta, badge = format_eta_badge(size_bytes, seeders)
+            summary = f"{size_gb} GB | {seeders} Seed | {badge} ({eta})"
+            return {"found": True, "seeders": seeders, "size_gb": size_gb, "summary": summary, "title": best.get("title")}
+
+        return {
+            "1080p": parse_tier(t1080),
+            "kompakt_4k": parse_tier(t_kompakt),
+            "full_4k": parse_tier(t_full)
+        }
+

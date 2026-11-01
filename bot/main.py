@@ -221,7 +221,7 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     movie_name = " ".join(context.args)
-    search_msg = await update.message.reply_text(f"🔍 *{movie_name}* aranıyor...", parse_mode="Markdown")
+    search_msg = await update.message.reply_text(f"🔍 *{movie_name}* ve torrent kaynakları taranıyor...", parse_mode="Markdown")
 
     results = radarr.search_movie(movie_name)
     if not results:
@@ -232,17 +232,31 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = best_match.get("title")
     year = best_match.get("year", "Bilinmiyor")
 
-    # Kullanıcı için bekleyen isteği kaydet
-    PENDING_REQUESTS[user_id] = best_match
+    # Torrent seeder / boyut / ETA analizi yap
+    candidates = radarr.get_torrent_candidates(title, year if isinstance(year, int) else None)
+    c_1080 = candidates.get("1080p", {})
+    c_kompakt = candidates.get("kompakt_4k", {})
+    c_full = candidates.get("full_4k", {})
+
+    # Kullanıcı için bekleyen isteği ve adayları kaydet
+    PENDING_REQUESTS[user_id] = {
+        "movie": best_match,
+        "candidates": candidates
+    }
+
+    # Buton etiketlerini seeder durumuna göre dinamik hazırla
+    btn_1080 = "🎬 1080p (Full HD)" if c_1080.get("found") else "⚠️ 1080p (Seeder Yok)"
+    btn_kompakt = "⚡ Kompakt 2160p" if c_kompakt.get("found") else "⚠️ Kompakt 2160p (Seeder Yok)"
+    btn_full = "👑 Full 2160p" if c_full.get("found") else "⚠️ Full 2160p (Seeder Yok)"
 
     # Kalite butonları (1080p, Kompakt 2160p, Full 2160p)
     keyboard = [
         [
-            InlineKeyboardButton("🎬 1080p (Full HD)", callback_data=f"qual_4_{user_id}")
+            InlineKeyboardButton(btn_1080, callback_data=f"qual_4_{user_id}")
         ],
         [
-            InlineKeyboardButton("⚡ Kompakt 2160p (4K ~7GB)", callback_data=f"qual_7_{user_id}"),
-            InlineKeyboardButton("👑 Full 2160p (4K Master ~20GB)", callback_data=f"qual_5_{user_id}")
+            InlineKeyboardButton(btn_kompakt, callback_data=f"qual_7_{user_id}"),
+            InlineKeyboardButton(btn_full, callback_data=f"qual_5_{user_id}")
         ],
         [
             InlineKeyboardButton("❌ İptal", callback_data=f"qual_cancel_{user_id}")
@@ -252,10 +266,11 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         f"🎬 *{title} ({year})* bulundu!\n\n"
-        "📥 *Hangi kalitede indirmek istersiniz?*\n"
-        "• `1080p` : Standart Full HD (Hızlı ve hafif)\n"
-        "• `Kompakt 2160p` : 4K çözünürlük (~7 GB, disk ve upload dostu)\n"
-        "• `Full 2160p` : Gerçek Stüdyo 4K (~20 GB, kayıpsız Atmos/HDR)"
+        "📊 *Torrent Durumu ve İndirme Süreleri:*\n"
+        f"• 🎬 `1080p` : {c_1080.get('summary', 'Bilinmiyor')}\n"
+        f"• ⚡ `Kompakt 2160p` : {c_kompakt.get('summary', 'Bilinmiyor')}\n"
+        f"• 👑 `Full 2160p` : {c_full.get('summary', 'Bilinmiyor')}\n\n"
+        "📥 *Hangi kalitede indirmek istersiniz?*"
     )
     await search_msg.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
@@ -337,9 +352,20 @@ async def quality_callback_handler(update: Update, context: ContextTypes.DEFAULT
             await query.answer("Bu seçimi yalnızca isteği yapan kişi kullanabilir.", show_alert=True)
             return
 
-        movie_data = PENDING_REQUESTS.pop(user_id, None)
-        if not movie_data:
+        request_data = PENDING_REQUESTS.pop(user_id, None)
+        if not request_data:
             await query.edit_message_text("⚠️ İstek zaman aşımına uğradı, lütfen `/istek` ile tekrar aratın.")
+            return
+
+        movie_data = request_data.get("movie") if isinstance(request_data, dict) and "movie" in request_data else request_data
+        candidates = request_data.get("candidates", {}) if isinstance(request_data, dict) else {}
+
+        # 0 seeder kontrolü: eğer kalitede hiç seeder yoksa indirmeyi başlatma, kullanıcıya alert ver
+        tier_key = "1080p" if quality_id == 4 else ("kompakt_4k" if quality_id == 7 else "full_4k")
+        tier_info = candidates.get(tier_key)
+        if tier_info and not tier_info.get("found"):
+            PENDING_REQUESTS[user_id] = request_data
+            await query.answer("⛔ Bu kalitede indirilebilir seeder/torrent bulunamadı! Lütfen diğer seçenekleri değerlendirin.", show_alert=True)
             return
 
         title = movie_data.get("title")
