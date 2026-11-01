@@ -5,6 +5,7 @@ import asyncio
 import logging
 import requests
 from datetime import datetime
+from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import RetryAfter, BadRequest
