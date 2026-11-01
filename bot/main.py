@@ -590,6 +590,7 @@ def build_depo_view():
 
     movies_data = []
     total_used_bytes = 0
+    total_projected_bytes = 0
 
     for m in movies:
         m_id = m.get("id")
@@ -599,19 +600,34 @@ def build_depo_view():
         size_bytes = m.get("sizeOnDisk", 0)
 
         status_extra = ""
+        size_display = ""
+        current_used = 0
+        projected = 0
+
         if not size_bytes and m_id in queue:
             q_item = queue[m_id]
-            size_bytes = q_item.get("size", 0)
+            tot_bytes = q_item.get("size", 0)
             size_left = q_item.get("sizeleft", 0)
+            dl_bytes = max(0, tot_bytes - size_left)
             pct = 0
-            if size_bytes > 0:
-                pct = int(((size_bytes - size_left) / size_bytes) * 100)
+            if tot_bytes > 0:
+                pct = int((dl_bytes / tot_bytes) * 100)
+            current_used = dl_bytes
+            projected = tot_bytes
+            dl_gb = round(dl_bytes / (1024**3), 2)
+            tot_gb = round(tot_bytes / (1024**3), 2)
+            size_display = f"`{dl_gb} / {tot_gb} GB`"
             status_extra = f" *(İniyor %{pct})*"
-        elif not size_bytes and m.get("movieFile"):
-            size_bytes = m["movieFile"].get("size", 0)
+        else:
+            if not size_bytes and m.get("movieFile"):
+                size_bytes = m["movieFile"].get("size", 0)
+            current_used = size_bytes
+            projected = size_bytes
+            size_gb = round(size_bytes / (1024**3), 2)
+            size_display = f"`{size_gb} GB`"
 
-        total_used_bytes += size_bytes
-        size_gb = round(size_bytes / (1024**3), 2)
+        total_used_bytes += current_used
+        total_projected_bytes += projected
 
         qual_names = {4: "1080p", 7: "Kompakt 4K", 5: "Full 4K"}
         qual_tag = qual_names.get(qual_id, "Diğer")
@@ -625,22 +641,28 @@ def build_depo_view():
             "year": year,
             "qual_id": qual_id,
             "qual_tag": qual_tag,
-            "size_gb": size_gb,
+            "size_display": size_display,
+            "sort_size": projected,
             "status_extra": status_extra,
             "is_fav": is_fav,
             "fav_obj": fav_obj
         })
 
-    # Boyuta göre büyükten küçüğe sırala
-    movies_data.sort(key=lambda x: x["size_gb"], reverse=True)
+    # Boyuta göre büyükten küçüğe sırala (toplam beklenen boyut)
+    movies_data.sort(key=lambda x: x["sort_size"], reverse=True)
 
     used_gb = round(total_used_bytes / (1024**3), 2)
     percent = round((used_gb / TOTAL_STORAGE_GB) * 100, 1)
     bar = render_progress_bar(min(percent, 100.0), length=10)
 
+    proj_extra = ""
+    if total_projected_bytes > total_used_bytes:
+        proj_gb = round(total_projected_bytes / (1024**3), 2)
+        proj_extra = f"\n⏳ _İndirmeler bitince beklenen toplam: ~{proj_gb} GB_"
+
     text = (
         f"📦 *CineNode Depolama Durumu*\n"
-        f"`[{bar}]` *{used_gb} GB / {TOTAL_STORAGE_GB:.1f} GB* (`%{percent}`)\n\n"
+        f"`[{bar}]` *{used_gb} GB / {TOTAL_STORAGE_GB:.1f} GB* (`%{percent}`){proj_extra}\n\n"
         f"🎬 *Kütüphanedeki Filmler ({len(movies_data)}):*\n"
     )
 
@@ -652,7 +674,7 @@ def build_depo_view():
             if md["is_fav"]:
                 u_name = md["fav_obj"].get("user_name", "")
                 fav_icon = f" ⭐ _(@{u_name})_" if u_name else " ⭐"
-            text += f"{idx}. *{md['title']} ({md['year']})* [{md['qual_tag']}] — `{md['size_gb']} GB`{md['status_extra']}{fav_icon}\n"
+            text += f"{idx}. *{md['title']} ({md['year']})* [{md['qual_tag']}] — {md['size_display']}{md['status_extra']}{fav_icon}\n"
 
     text += "\n👇 _Film silmek veya favoriye almak için butona tıklayın:_"
 
@@ -715,9 +737,22 @@ async def depo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         qual_name = qual_names.get(qual_id, "Diğer")
 
         size_bytes = movie.get("sizeOnDisk", 0)
-        if not size_bytes and movie.get("movieFile"):
-            size_bytes = movie["movieFile"].get("size", 0)
-        size_gb = round(size_bytes / (1024**3), 2)
+        size_str = ""
+        queue = {q.get("movieId"): q for q in radarr.get_queue() if q.get("movieId")}
+        if not size_bytes and movie_id in queue:
+            q_item = queue[movie_id]
+            tot_bytes = q_item.get("size", 0)
+            size_left = q_item.get("sizeleft", 0)
+            dl_bytes = max(0, tot_bytes - size_left)
+            pct = int((dl_bytes / tot_bytes) * 100) if tot_bytes > 0 else 0
+            dl_gb = round(dl_bytes / (1024**3), 2)
+            tot_gb = round(tot_bytes / (1024**3), 2)
+            size_str = f"`{dl_gb} GB / {tot_gb} GB` *(İniyor %{pct})*"
+        else:
+            if not size_bytes and movie.get("movieFile"):
+                size_bytes = movie["movieFile"].get("size", 0)
+            size_gb = round(size_bytes / (1024**3), 2)
+            size_str = f"`{size_gb} GB`"
 
         is_fav = favorites_mgr.is_favorite(movie_id)
         fav_obj = favorites_mgr.get_favorite(movie_id) if is_fav else None
@@ -733,7 +768,7 @@ async def depo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         detail_text = (
             f"🎬 *{title} ({year})*\n\n"
             f"• 📼 *Kalite:* {qual_name} ({cost_pts} Puan)\n"
-            f"• 💾 *Boyut:* `{size_gb} GB`\n"
+            f"• 💾 *Boyut:* {size_str}\n"
             f"• ⭐ *Favori:* {fav_text}\n"
             f"• 👤 *Sizin Favori Kotanız:* {user_pts}/4 Puan\n\n"
             "ℹ️ _Favori kuralları: 1 Full 4K (4p), 2 Kompakt 4K (2x2p) veya 4 1080p (4x1p)._\n"
