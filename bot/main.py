@@ -496,7 +496,21 @@ async def live_tracker_task(chat_id: int, message_id: int, context: ContextTypes
             now_str = datetime.now().strftime("%H:%M:%S")
             msg += f"_(Son güncelleme: {now_str} • Her ~2.5 sn canlı güncellenir)_"
 
-            keyboard = [[InlineKeyboardButton("🛑 Canlı Takibi Durdur", callback_data=f"stop_track_{chat_id}")]]
+            keyboard = []
+            for t in torrents[:4]:
+                t_hash = t.get("hash")
+                t_name = t.get("name", "Film")
+                if t_hash:
+                    if len(torrents) == 1:
+                        btn_label = "🛑 İndirmeyi İptal Et"
+                    else:
+                        clean_name = t_name.split(".")[0].replace("_", " ")
+                        if len(clean_name) > 18:
+                            clean_name = clean_name[:17] + "…"
+                        btn_label = f"🛑 İndirmeyi İptal Et ({clean_name})"
+                    keyboard.append([InlineKeyboardButton(btn_label, callback_data=f"cancel_dl_{t_hash}")])
+
+            keyboard.append([InlineKeyboardButton("⏹️ Canlı Takibi Durdur", callback_data=f"stop_track_{chat_id}")])
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             if msg != last_text:
@@ -556,6 +570,31 @@ async def stop_track_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text("⏹️ Canlı takip durduruldu. Tekrar başlatmak için `/durum` yazabilirsiniz.")
     except Exception:
         pass
+
+async def cancel_dl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    user = update.effective_user
+    user_id = user.id
+
+    if not is_user_authorized(user_id):
+        await query.answer("⛔ Bu işlemi yapma yetkiniz bulunmuyor.", show_alert=True)
+        return
+
+    # format: cancel_dl_{t_hash}
+    t_hash = data.split("_")[2]
+
+    # Canlı torrentlerden adı yakala
+    torrents = radarr.get_live_torrents()
+    t_match = next((t for t in torrents if (t.get("hash") or "").lower() == t_hash.lower()), None)
+    movie_title = t_match.get("name", "Film") if t_match else "Film"
+
+    success = radarr.cancel_download(torrent_hash=t_hash, delete_from_radarr=True)
+
+    if success:
+        await query.answer(f"🛑 {movie_title[:30]} indirmesi iptal edildi ve silindi.", show_alert=True)
+    else:
+        await query.answer("⚠️ İndirme iptal edilirken bir sorun oluştu veya torrent zaten sonlandı.", show_alert=True)
 
 async def shift_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now()
@@ -776,12 +815,16 @@ async def depo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
         buttons = []
-        if is_fav:
-            buttons.append([InlineKeyboardButton("⭐ Favoriden Çıkar", callback_data=f"depo_unfav_{movie_id}")])
+        if movie_id in queue:
+            buttons.append([InlineKeyboardButton("🛑 İndirmeyi İptal Et ve Sil", callback_data=f"depo_canceldl_{movie_id}")])
         else:
-            buttons.append([InlineKeyboardButton(f"⭐ Favoriye Al ({cost_pts} Puan)", callback_data=f"depo_fav_{movie_id}")])
+            if is_fav:
+                buttons.append([InlineKeyboardButton("⭐ Favoriden Çıkar", callback_data=f"depo_unfav_{movie_id}")])
+            else:
+                buttons.append([InlineKeyboardButton(f"⭐ Favoriye Al ({cost_pts} Puan)", callback_data=f"depo_fav_{movie_id}")])
 
-        buttons.append([InlineKeyboardButton("🗑️ Filmi Sil", callback_data=f"depo_delask_{movie_id}")])
+            buttons.append([InlineKeyboardButton("🗑️ Filmi Sil", callback_data=f"depo_delask_{movie_id}")])
+
         buttons.append([InlineKeyboardButton("🔙 Film Listesine Dön", callback_data="depo_list")])
 
         await query.edit_message_text(detail_text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
@@ -818,6 +861,66 @@ async def depo_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer("Film favorilerden çıkarıldı.", show_alert=False)
         query.data = f"depo_view_{movie_id}"
         await depo_callback_handler(update, context)
+        return
+
+    if data.startswith("depo_canceldl_"):
+        movie_id = int(data.split("_")[2])
+        movie = radarr.get_movie_by_id(movie_id)
+        if not movie:
+            await query.answer("Film bulunamadı.", show_alert=True)
+            return
+
+        can_del, reason = favorites_mgr.can_delete_movie(movie_id, user_id, is_admin=user_is_admin)
+        if not can_del:
+            await query.answer(reason, show_alert=True)
+            return
+
+        title = movie.get("title", "Film")
+        year = movie.get("year", "")
+
+        confirm_text = (
+            f"🛑 *İndirmeyi İptal Etme ve Silme Onayı*\n\n"
+            f"*{title} ({year})* filminin indirmesi durdurulacak, kuyruktan çıkarılacak ve diskteki geçici dosyalar tamamen silinecektir.\n\n"
+            "Emin misiniz?"
+        )
+        buttons = [
+            [
+                InlineKeyboardButton("🛑 Evet, İptal Et ve Sil", callback_data=f"depo_canceldlconfirm_{movie_id}")
+            ],
+            [
+                InlineKeyboardButton("❌ Vazgeç", callback_data=f"depo_view_{movie_id}")
+            ]
+        ]
+        await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        return
+
+    if data.startswith("depo_canceldlconfirm_"):
+        movie_id = int(data.split("_")[2])
+        movie = radarr.get_movie_by_id(movie_id)
+        title = movie.get("title", "Film") if movie else "Film"
+
+        can_del, reason = favorites_mgr.can_delete_movie(movie_id, user_id, is_admin=user_is_admin)
+        if not can_del:
+            await query.answer(reason, show_alert=True)
+            return
+
+        await query.edit_message_text(f"⏳ *{title}* indirmesi iptal ediliyor ve dosyalar siliniyor...", parse_mode="Markdown")
+
+        # 1. İndirmeyi iptal et ve Radarr'dan temizle
+        radarr.cancel_download(movie_id=movie_id, delete_from_radarr=True)
+
+        # 2. Favorilerde varsa kaldır
+        if favorites_mgr.is_favorite(movie_id):
+            favorites_mgr.remove_favorite(movie_id, user_id, is_admin=True)
+
+        done_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Depo Listesine Dön", callback_data="depo_list")]
+        ])
+        await query.edit_message_text(
+            f"🛑 *{title}* indirmesi başarıyla iptal edildi ve dosyaları temizlendi.",
+            reply_markup=done_markup,
+            parse_mode="Markdown"
+        )
         return
 
     if data.startswith("depo_delask_"):
@@ -925,6 +1028,7 @@ def main():
     app.add_handler(CommandHandler("depo", depo_command))
     app.add_handler(CallbackQueryHandler(quality_callback_handler, pattern=r"^qual_"))
     app.add_handler(CallbackQueryHandler(stop_track_callback, pattern=r"^stop_track_"))
+    app.add_handler(CallbackQueryHandler(cancel_dl_callback, pattern=r"^cancel_dl_"))
     app.add_handler(CallbackQueryHandler(depo_callback_handler, pattern=r"^depo_"))
 
     logger.info("CineBot hazır ve dinliyor...")

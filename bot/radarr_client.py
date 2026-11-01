@@ -186,6 +186,7 @@ class RadarrClient:
                     if t.get("state") in ["downloading", "stalledDL", "queuedDL", "forcedDL"]:
                         active.append({
                             "name": t.get("name"),
+                            "hash": t.get("hash"),
                             "progress": round(t.get("progress", 0) * 100, 1),
                             "dlspeed": round(t.get("dlspeed", 0) / (1024 * 1024), 2),
                             "eta": t.get("eta", 0),
@@ -197,6 +198,103 @@ class RadarrClient:
         except Exception as e:
             print(f"qBittorrent canlı veri hatası: {e}")
         return []
+
+    def cancel_download(self, torrent_hash: Optional[str] = None, movie_id: Optional[int] = None, delete_from_radarr: bool = True) -> bool:
+        """İndirmeyi qBittorrent ve Radarr kuyruğundan siler, diskteki yarım dosyaları temizler."""
+        success = False
+        target_movie_ids = set()
+        if movie_id:
+            target_movie_ids.add(movie_id)
+
+        # 1. Radarr kuyruğundan sil
+        try:
+            q_url = f"{self.base_url}/api/v3/queue"
+            q_res = requests.get(q_url, headers=self.headers, timeout=5)
+            if q_res.status_code == 200:
+                for record in q_res.json().get("records", []):
+                    rec_id = record.get("id")
+                    rec_hash = (record.get("downloadId") or "").lower()
+                    rec_movie_id = record.get("movieId")
+
+                    matches_hash = torrent_hash and rec_hash == torrent_hash.lower()
+                    matches_movie = movie_id and rec_movie_id == movie_id
+
+                    if matches_hash or matches_movie:
+                        if rec_movie_id:
+                            target_movie_ids.add(rec_movie_id)
+                        del_url = f"{self.base_url}/api/v3/queue/{rec_id}"
+                        params = {"removeFromClient": "true", "blocklist": "true"}
+                        requests.delete(del_url, headers=self.headers, params=params, timeout=5)
+                        success = True
+        except Exception as e:
+            print(f"Radarr kuyruk silme hatası: {e}")
+
+        # 2. qBittorrent'ten sil
+        if torrent_hash:
+            try:
+                requests.post(
+                    f"{self.qbit_url}/api/v2/torrents/delete",
+                    data={"hashes": torrent_hash, "deleteFiles": "true"},
+                    timeout=5
+                )
+                success = True
+            except Exception as e:
+                print(f"qBittorrent torrent silme hatası: {e}")
+
+        # 3. Eğer movie_id verilmişse ve torrent_hash bilinmiyorsa qBittorrent'i ad üzerinden tara
+        if movie_id and not torrent_hash:
+            try:
+                movie = self.get_movie_by_id(movie_id)
+                if movie:
+                    m_title = movie.get("title", "").lower()
+                    q_res = requests.get(f"{self.qbit_url}/api/v2/torrents/info", timeout=5)
+                    if q_res.status_code == 200:
+                        for t in q_res.json():
+                            if m_title in t.get("name", "").lower():
+                                requests.post(
+                                    f"{self.qbit_url}/api/v2/torrents/delete",
+                                    data={"hashes": t.get("hash"), "deleteFiles": "true"},
+                                    timeout=5
+                                )
+                                success = True
+            except Exception as e:
+                print(f"qBittorrent isim eşleştirme hatası: {e}")
+
+        # Hash üzerinden hedef movie_id bulunamadıysa qBit torrent adından eşleştir
+        if not target_movie_ids and torrent_hash:
+            try:
+                q_res = requests.get(f"{self.qbit_url}/api/v2/torrents/info", timeout=5)
+                if q_res.status_code == 200:
+                    for t in q_res.json():
+                        if (t.get("hash") or "").lower() == torrent_hash.lower():
+                            t_name = t.get("name", "").lower()
+                            for m in self.get_all_movies():
+                                if m.get("title", "").lower() in t_name:
+                                    target_movie_ids.add(m.get("id"))
+                                    break
+            except Exception as e:
+                print(f"qBittorrent eşleştirme hatası: {e}")
+
+        # 4. Radarr'dan filmi tamamen sil (eğer delete_from_radarr=True ise)
+        if delete_from_radarr:
+            for mid in target_movie_ids:
+                try:
+                    m = self.get_movie_by_id(mid)
+                    m_path = m.get("path") if m else None
+                    self.delete_movie(mid, delete_files=True)
+                    if m_path:
+                        host_path = m_path
+                        if host_path.startswith("/media/"):
+                            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                            rel_path = host_path[len("/media/"):].replace("/", os.sep)
+                            host_path = os.path.join(base_dir, "media", rel_path)
+                        if os.path.exists(host_path):
+                            import shutil
+                            shutil.rmtree(host_path, ignore_errors=True)
+                except Exception as e:
+                    print(f"Radarr film kaldırma hatası: {e}")
+
+        return success
 
     def get_torrent_candidates(self, title: str, year: Optional[int] = None) -> Dict[str, Any]:
         """Prowlarr üzerinden 1080p, Kompakt 4K ve Full 4K için seeder ve ETA analizi yapar."""
