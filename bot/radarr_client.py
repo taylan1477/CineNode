@@ -342,7 +342,7 @@ class RadarrClient:
 
         def format_eta_badge(size_bytes: int, eff_seeders: int):
             if eff_seeders <= 0 or size_bytes <= 0:
-                return "0 sn", "❌ İndirilemez", False
+                return "İndirilemez", "❌ İndirilemez"
 
             # Aktif seeder sayısına göre varsayılan transfer hızı
             if eff_seeders >= 25:
@@ -358,7 +358,38 @@ class RadarrClient:
             minutes = seconds / 60
             is_large = size_bytes > 15 * (1024**3)
 
-            # Süre formatı
+            # Rozet kategorisini süreye (dakika) göre belirle
+            if not is_large:
+                # 1080p ve Kompakt 4K (<= 15 GB):
+                # <10 dk, <30 dk, <90 dk, <180 dk (1.5-3 sa), 180-360 dk (3-6 sa), >360 dk (İndirilemez)
+                if minutes < 10:
+                    badge = "⚡ Çok Hızlı"
+                elif minutes < 30:
+                    badge = "🚀 Hızlı"
+                elif minutes < 90:
+                    badge = "⏳ Normal"
+                elif minutes < 180:
+                    badge = "⚠️ Yavaş"
+                elif minutes <= 360:
+                    badge = "⚠️ Çok Yavaş"
+                else:
+                    badge = "❌ İndirilemez"
+            else:
+                # Full 4K (> 15 GB):
+                # <30 dk, <60 dk, <120 dk, <360 dk (2-6 sa), 360-720 dk (6-12 sa), >720 dk (İndirilemez)
+                if minutes < 30:
+                    badge = "⚡ Çok Hızlı"
+                elif minutes < 60:
+                    badge = "🚀 Hızlı"
+                elif minutes < 120:
+                    badge = "⏳ Normal"
+                elif minutes < 360:
+                    badge = "⚠️ Yavaş"
+                elif minutes <= 720:
+                    badge = "⚠️ Çok Yavaş"
+                else:
+                    badge = "❌ İndirilemez"
+
             if seconds < 60:
                 time_str = f"~{seconds} sn"
             elif seconds < 3600:
@@ -370,38 +401,11 @@ class RadarrClient:
             else:
                 days = round(seconds / 86400, 1)
                 time_str = f"~{days} gün"
-
-            # Rozet kategorisini süreye göre belirle:
-            # 10 GB (1080p / Kompakt): 6 saatten (360 dk) fazla ise indirilemez
-            # 50 GB (Full 4K Master): 12 saatten (720 dk) fazla ise indirilemez
-            if not is_large:
-                if minutes > 360:
-                    return time_str, "❌ İndirilemez", False
-                elif minutes < 10:
-                    badge = "⚡ Çok Hızlı"
-                elif minutes < 30:
-                    badge = "🚀 Hızlı"
-                elif minutes < 90:
-                    badge = "⏳ Normal"
-                else:
-                    badge = "⚠️ Yavaş"
-            else:
-                if minutes > 720:
-                    return time_str, "❌ İndirilemez", False
-                elif minutes < 30:
-                    badge = "⚡ Çok Hızlı"
-                elif minutes < 60:
-                    badge = "🚀 Hızlı"
-                elif minutes < 120:
-                    badge = "⏳ Normal"
-                else:
-                    badge = "⚠️ Yavaş"
-
-            return time_str, badge, True
+            return time_str, badge
 
         def parse_tier(candidates):
             if not candidates:
-                return {"found": False, "seeders": 0, "size_gb": 0.0, "summary": "❌ İndirilemez (Torrent Yok)"}
+                return {"found": False, "seeders": 0, "size_gb": 0.0, "summary": "❌ İndirilemez (Kaynak Yok)"}
             best = max(candidates, key=lambda x: x.get("seeders", 0))
             seeders = best.get("seeders", 0)
             size_bytes = best.get("size", 0)
@@ -411,16 +415,15 @@ class RadarrClient:
 
             # Swarm'ın tamamı garanti olmadığı için hesap %25 aktif seed üzerinden yapılır
             eff_seeders = max(1, int(round(seeders * 0.25)))
-            eta, badge, is_downloadable = format_eta_badge(size_bytes, eff_seeders)
+            eta, badge = format_eta_badge(size_bytes, eff_seeders)
+
+            # Belirlenen süre limitleri aşılmışsa indirmeyi kitle
+            if badge == "❌ İndirilemez":
+                summary = f"{size_gb} GB | {seeders} Seed | ❌ İndirilemez ({eta} sürer)"
+                return {"found": False, "seeders": seeders, "eff_seeders": eff_seeders, "size_gb": size_gb, "summary": summary, "title": best.get("title")}
+
             summary = f"{size_gb} GB | {seeders} Seed (~{eff_seeders} Aktif) | {badge} ({eta})"
-            return {
-                "found": is_downloadable,
-                "seeders": seeders,
-                "eff_seeders": eff_seeders,
-                "size_gb": size_gb,
-                "summary": summary,
-                "title": best.get("title")
-            }
+            return {"found": True, "seeders": seeders, "eff_seeders": eff_seeders, "size_gb": size_gb, "summary": summary, "title": best.get("title")}
 
         return {
             "1080p": parse_tier(t1080),

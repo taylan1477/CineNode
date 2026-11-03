@@ -246,7 +246,7 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "candidates": candidates
     }
 
-    # Buton etiketlerini indirilebilirlik durumuna göre dinamik hazırla
+    # Buton etiketlerini seeder ve indirilebilirlik durumuna göre hazırla
     btn_1080 = "🎬 1080p (Full HD)" if c_1080.get("found") else "❌ 1080p (İndirilemez)"
     btn_kompakt = "⚡ Kompakt 2160p" if c_kompakt.get("found") else "❌ Kompakt 2160p (İndirilemez)"
     btn_full = "👑 Full 2160p" if c_full.get("found") else "❌ Full 2160p (İndirilemez)"
@@ -362,12 +362,12 @@ async def quality_callback_handler(update: Update, context: ContextTypes.DEFAULT
         movie_data = request_data.get("movie") if isinstance(request_data, dict) and "movie" in request_data else request_data
         candidates = request_data.get("candidates", {}) if isinstance(request_data, dict) else {}
 
-        # İndirilebilirlik kontrolü: seeder yoksa veya süre sınırları (1080p > 6 saat, 4K > 12 saat) aşıldıysa engelle
+        # 0 seeder kontrolü: eğer kalitede hiç seeder yoksa indirmeyi başlatma, kullanıcıya alert ver
         tier_key = "1080p" if quality_id == 4 else ("kompakt_4k" if quality_id == 7 else "full_4k")
         tier_info = candidates.get(tier_key)
         if tier_info and not tier_info.get("found"):
             PENDING_REQUESTS[user_id] = request_data
-            await query.answer("⛔ Bu kalite indirilemez durumdadır (tahmini indirme süresi sınırı aşıyor veya seeder yok)! Lütfen diğer seçenekleri değerlendirin.", show_alert=True)
+            await query.answer("⛔ Bu kalitedeki sürüm indirilemez! (Süre sınırı aşıldı veya kaynak yok).", show_alert=True)
             return
 
         title = movie_data.get("title")
