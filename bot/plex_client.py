@@ -16,6 +16,34 @@ class PlexManager:
         self.account: Optional[MyPlexAccount] = None
         self._init_connection()
 
+    def _get_lan_ip(self) -> str:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("10.255.255.255", 1))
+            return s.getsockname()[0]
+        except Exception:
+            return "127.0.0.1"
+        finally:
+            s.close()
+
+    def _sync_custom_connections(self):
+        """Host makinenin yerel IP'si değiştikçe Plex customConnections ayarını günceller."""
+        if not self.server:
+            return
+        try:
+            lan_ip = self._get_lan_ip()
+            if not lan_ip or lan_ip.startswith("127."):
+                return
+            current = self.server.settings.get("customConnections").value or ""
+            if lan_ip not in current:
+                expected = f"http://{lan_ip}:32400,https://{lan_ip}:32400"
+                put_url = f"{self.base_url}/:/prefs?customCertificatePath=&customConnections={expected}"
+                requests.put(put_url, headers={"X-Plex-Token": self.token}, timeout=5)
+                logger.info(f"Plex customConnections otomatik güncellendi: {expected}")
+        except Exception as e:
+            logger.debug(f"Plex IP senkronizasyon hatası: {e}")
+
     def _init_connection(self):
         if not self.token:
             logger.warning("PLEX_TOKEN tanımlanmadığı için PlexManager pasif modda.")
@@ -24,6 +52,7 @@ class PlexManager:
             self.server = PlexServer(self.base_url, self.token)
             self.account = self.server.myPlexAccount()
             logger.info("Plex sunucusuna başarıyla bağlanıldı.")
+            self._sync_custom_connections()
         except Exception as e:
             logger.error(f"Plex bağlantı hatası: {e}")
 
