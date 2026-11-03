@@ -343,20 +343,47 @@ class RadarrClient:
         def format_eta_badge(size_bytes: int, eff_seeders: int):
             if eff_seeders <= 0 or size_bytes <= 0:
                 return "İndirilemez", "❌ Seeder Yok"
+
+            # Aktif seeder sayısına göre varsayılan transfer hızı
             if eff_seeders >= 25:
-                speed_bytes = 25 * 1024 * 1024
-                badge = "⚡ Çok Hızlı"
+                speed_bytes = 28 * 1024 * 1024  # ~28 MB/s
             elif eff_seeders >= 10:
-                speed_bytes = 8 * 1024 * 1024
-                badge = "🚀 Hızlı"
+                speed_bytes = 8 * 1024 * 1024   # ~8 MB/s
             elif eff_seeders >= 4:
-                speed_bytes = 2 * 1024 * 1024
-                badge = "⏳ Normal"
+                speed_bytes = 2 * 1024 * 1024   # ~2 MB/s
             else:
-                speed_bytes = 400 * 1024
-                badge = "⚠️ Yavaş"
+                speed_bytes = 400 * 1024         # ~400 KB/s
 
             seconds = int(size_bytes / speed_bytes)
+            minutes = seconds / 60
+            is_large = size_bytes > 15 * (1024**3)
+
+            # Rozet kategorisini süreye (dakika) göre belirle
+            if not is_large:
+                # 1080p ve Kompakt 4K (<= 15 GB): <10 dk, <30 dk, <90 dk, <180 dk
+                if minutes < 10:
+                    badge = "⚡ Çok Hızlı"
+                elif minutes < 30:
+                    badge = "🚀 Hızlı"
+                elif minutes < 90:
+                    badge = "⏳ Normal"
+                elif minutes < 180:
+                    badge = "⚠️ Yavaş"
+                else:
+                    badge = "⚠️ Çok Yavaş"
+            else:
+                # Full 4K (> 15 GB): <30 dk, <60 dk, <120 dk, <360 dk
+                if minutes < 30:
+                    badge = "⚡ Çok Hızlı"
+                elif minutes < 60:
+                    badge = "🚀 Hızlı"
+                elif minutes < 120:
+                    badge = "⏳ Normal"
+                elif minutes < 360:
+                    badge = "⚠️ Yavaş"
+                else:
+                    badge = "⚠️ Çok Yavaş"
+
             if seconds < 60:
                 time_str = f"~{seconds} sn"
             elif seconds < 3600:
