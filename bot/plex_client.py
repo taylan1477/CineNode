@@ -34,6 +34,8 @@ class PlexManager:
         """
         results = {}
         if not self.server or not self.account:
+            self._init_connection()
+        if not self.server or not self.account:
             return {email: False for email in user_emails}
 
         try:
@@ -67,6 +69,8 @@ class PlexManager:
 
     def get_active_sessions(self) -> List[Dict[str, Any]]:
         """Şu an aktif video izleyenleri döner."""
+        if not self.server:
+            self._init_connection()
         if not self.server:
             return []
         try:
