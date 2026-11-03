@@ -246,14 +246,10 @@ async def request_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "candidates": candidates
     }
 
-    # Buton etiketlerini indirilebilirlik durumuna göre hazırla
-    can_1080 = c_1080.get("found") and c_1080.get("downloadable", True)
-    can_kompakt = c_kompakt.get("found") and c_kompakt.get("downloadable", True)
-    can_full = c_full.get("found") and c_full.get("downloadable", True)
-
-    btn_1080 = "🎬 1080p (Full HD)" if can_1080 else "❌ 1080p (İndirilemez)"
-    btn_kompakt = "⚡ Kompakt 2160p" if can_kompakt else "❌ Kompakt 2160p (İndirilemez)"
-    btn_full = "👑 Full 2160p" if can_full else "❌ Full 2160p (İndirilemez)"
+    # Buton etiketlerini indirilebilirlik durumuna göre dinamik hazırla
+    btn_1080 = "🎬 1080p (Full HD)" if c_1080.get("found") else "❌ 1080p (İndirilemez)"
+    btn_kompakt = "⚡ Kompakt 2160p" if c_kompakt.get("found") else "❌ Kompakt 2160p (İndirilemez)"
+    btn_full = "👑 Full 2160p" if c_full.get("found") else "❌ Full 2160p (İndirilemez)"
 
     # Kalite butonları (1080p, Kompakt 2160p, Full 2160p)
     keyboard = [
@@ -366,12 +362,12 @@ async def quality_callback_handler(update: Update, context: ContextTypes.DEFAULT
         movie_data = request_data.get("movie") if isinstance(request_data, dict) and "movie" in request_data else request_data
         candidates = request_data.get("candidates", {}) if isinstance(request_data, dict) else {}
 
-        # İndirilebilirlik kontrolü: 0 seeder veya süre sınırını (6 sa / 12 sa) aşan torrentler
+        # İndirilebilirlik kontrolü: seeder yoksa veya süre sınırları (1080p > 6 saat, 4K > 12 saat) aşıldıysa engelle
         tier_key = "1080p" if quality_id == 4 else ("kompakt_4k" if quality_id == 7 else "full_4k")
-        tier_info = candidates.get(tier_key, {})
-        if not tier_info.get("found") or not tier_info.get("downloadable", True):
+        tier_info = candidates.get(tier_key)
+        if tier_info and not tier_info.get("found"):
             PENDING_REQUESTS[user_id] = request_data
-            await query.answer("⛔ Bu sürüm seeder yetersizliği veya aşırı uzun indirme süresi (>6 sa / >12 sa) nedeniyle indirilemez! Lütfen diğer seçenekleri değerlendirin.", show_alert=True)
+            await query.answer("⛔ Bu kalite indirilemez durumdadır (tahmini indirme süresi sınırı aşıyor veya seeder yok)! Lütfen diğer seçenekleri değerlendirin.", show_alert=True)
             return
 
         title = movie_data.get("title")
