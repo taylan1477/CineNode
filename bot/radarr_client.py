@@ -340,20 +340,20 @@ class RadarrClient:
         t_kompakt = [x for x in t4k if x.get("size", 0) <= 15 * (1024**3)]
         t_full = [x for x in t4k if x.get("size", 0) > 15 * (1024**3)]
 
-        def format_eta_badge(size_bytes: int, seeders: int):
-            if seeders <= 0 or size_bytes <= 0:
+        def format_eta_badge(size_bytes: int, eff_seeders: int):
+            if eff_seeders <= 0 or size_bytes <= 0:
                 return "İndirilemez", "❌ Seeder Yok"
-            if seeders >= 50:
-                speed_bytes = 35 * 1024 * 1024
+            if eff_seeders >= 25:
+                speed_bytes = 25 * 1024 * 1024
                 badge = "⚡ Çok Hızlı"
-            elif seeders >= 15:
-                speed_bytes = 12 * 1024 * 1024
+            elif eff_seeders >= 10:
+                speed_bytes = 8 * 1024 * 1024
                 badge = "🚀 Hızlı"
-            elif seeders >= 5:
-                speed_bytes = 3 * 1024 * 1024
+            elif eff_seeders >= 4:
+                speed_bytes = 2 * 1024 * 1024
                 badge = "⏳ Normal"
             else:
-                speed_bytes = 600 * 1024
+                speed_bytes = 400 * 1024
                 badge = "⚠️ Yavaş"
 
             seconds = int(size_bytes / speed_bytes)
@@ -379,9 +379,12 @@ class RadarrClient:
             size_gb = round(size_bytes / (1024**3), 2)
             if seeders <= 0:
                 return {"found": False, "seeders": 0, "size_gb": size_gb, "summary": f"{size_gb} GB | ❌ 0 Seed (İnmez)"}
-            eta, badge = format_eta_badge(size_bytes, seeders)
-            summary = f"{size_gb} GB | {seeders} Seed | {badge} ({eta})"
-            return {"found": True, "seeders": seeders, "size_gb": size_gb, "summary": summary, "title": best.get("title")}
+            
+            # Swarm'ın tamamı garanti olmadığı için hesap %25 aktif seed üzerinden yapılır
+            eff_seeders = max(1, int(round(seeders * 0.25)))
+            eta, badge = format_eta_badge(size_bytes, eff_seeders)
+            summary = f"{size_gb} GB | {seeders} Seed (~{eff_seeders} Aktif) | {badge} ({eta})"
+            return {"found": True, "seeders": seeders, "eff_seeders": eff_seeders, "size_gb": size_gb, "summary": summary, "title": best.get("title")}
 
         return {
             "1080p": parse_tier(t1080),
