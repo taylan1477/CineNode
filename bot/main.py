@@ -93,11 +93,36 @@ def auto_import_completed_downloads():
             queue_records = radarr.get_queue()
             queue_map = {q.get("outputPath"): q.get("movieId") for q in queue_records if q.get("outputPath") and q.get("movieId")}
 
+            # Devam eden (tamamlanmamış) torrentleri tespit et
+            incomplete_torrents = set()
+            try:
+                qbit_url = f"http://{os.getenv('QBIT_HOST', 'localhost')}:{os.getenv('QBIT_PORT', '8080')}"
+                qres = requests.get(f"{qbit_url}/api/v2/torrents/info", timeout=5)
+                if qres.status_code == 200:
+                    for t in qres.json():
+                        if t.get("progress", 0) < 1.0 or t.get("state") in [
+                            "downloading", "stalledDL", "checkingDL", "queuedDL", "forcedDL", "metaDL", "allocating"
+                        ]:
+                            t_name = t.get("name", "").strip().lower()
+                            if t_name:
+                                incomplete_torrents.add(t_name)
+            except Exception as q_err:
+                logger.warning(f"qBittorrent kontrol uyarısı: {q_err}")
+
             import_files = []
             for f in files:
+                f_path = f.get("path", "")
+                f_path_lower = f_path.lower()
+
+                # Geçici dosya veya tamamlanmamış torrent ise aktarma!
+                if ".!qb" in f_path_lower:
+                    continue
+                if any(inc_name in f_path_lower for inc_name in incomplete_torrents):
+                    continue
+
                 movie_id = f.get("movieId") or (f.get("movie") or {}).get("id")
                 if not movie_id:
-                    movie_id = queue_map.get(f.get("path"))
+                    movie_id = queue_map.get(f_path)
 
                 if movie_id:
                     import_files.append({
@@ -137,12 +162,20 @@ def cleanup_completed_downloads():
         movies_1080p_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media", "movies_1080p")
         qbit_url = f"http://{os.getenv('QBIT_HOST', 'localhost')}:{os.getenv('QBIT_PORT', '8080')}"
 
+        incomplete_names = set()
+
         # 1. qBittorrent'teki torrentleri kontrol et
         try:
             res = requests.get(f"{qbit_url}/api/v2/torrents/info", timeout=5)
             if res.status_code == 200:
                 for t in res.json():
-                    if t.get("progress") == 1:
+                    if t.get("progress", 0) < 1.0 or t.get("state") in [
+                        "downloading", "stalledDL", "checkingDL", "queuedDL", "forcedDL", "metaDL", "allocating"
+                    ]:
+                        t_name = t.get("name", "").strip().lower()
+                        if t_name:
+                            incomplete_names.add(t_name)
+                    elif t.get("progress") == 1:
                         t_name = t.get("name", "")
                         clean_name = t_name.split("[")[0].split("(")[0].strip()
                         in_lib = False
@@ -165,6 +198,10 @@ def cleanup_completed_downloads():
         # 2. Doğrudan downloads klasöründeki artık dosya/klasörleri kontrol et
         if os.path.exists(downloads_dir):
             for item in os.listdir(downloads_dir):
+                item_lower = item.lower()
+                if item_lower.endswith(".!qb") or any(inc in item_lower for inc in incomplete_names):
+                    continue
+
                 item_path = os.path.join(downloads_dir, item)
                 clean_name = item.split("[")[0].split("(")[0].strip()
                 already_in_library = False
